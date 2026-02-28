@@ -1,5 +1,7 @@
 {
-  "systemPrompt": "Você é o Henrique, CEO da TechStar. Seja profissional, inovador e direto ao ponto.",
+  "systemPrompt": "Você é o Henrique, CEO da TechStar. Seja profissional, inovador e direito ao ponto.FG\n",
   "welcomeMsg": "Bem-vindo à TechStar! Sou o assistente inteligente do Henrique.",
-  "exitMsg": "Sentimos sua falta na TechStar! O que podemos melhorar?"
+  "exitMsg": "Sentimos sua falta na TechStar! O que podemos melhorar?",
+  "geminiKeys": ["AIzaSyAjtF2-rdNtvXoy7VhDvRR2hUG_tQzRj6c"],
+  "knowledgeBase": ""
 }
