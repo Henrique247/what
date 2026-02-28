@@ -108,6 +108,48 @@ app.get('/api/config', (req, res) => {
     res.send(config);
 });
 
+// Endpoint para listar chats únicos
+app.get('/api/chats', (req, res) => {
+    try {
+        const rows = db.prepare('SELECT jid, MAX(timestamp) as last_msg FROM history GROUP BY jid ORDER BY last_msg DESC').all();
+        res.send(rows);
+    } catch (e) {
+        res.status(500).send({ error: "Erro ao buscar chats" });
+    }
+});
+
+// Endpoint para pegar mensagens de um chat específico
+app.get('/api/chat/:jid', (req, res) => {
+    try {
+        const rows = db.prepare('SELECT role, text, timestamp FROM history WHERE jid = ? ORDER BY timestamp ASC').all(req.params.jid);
+        res.send(rows);
+    } catch (e) {
+        res.status(500).send({ error: "Erro ao buscar histórico" });
+    }
+});
+
+// Endpoint para análise de IA sobre os chats
+app.get('/api/analyze-chats', async (req, res) => {
+    try {
+        if (genAIs.length === 0) return res.status(400).send({ error: "Sem chaves Gemini" });
+        
+        const recentMessages = db.prepare('SELECT jid, role, text FROM history ORDER BY timestamp DESC LIMIT 100').all();
+        if (recentMessages.length === 0) return res.send({ summary: "Nenhuma conversa registrada ainda." });
+
+        const prompt = `Analise as seguintes conversas recentes do bot de WhatsApp da TechStar e forneça um resumo executivo dos principais tópicos, sentimentos dos clientes e possíveis melhorias ou oportunidades de negócio. Seja direto e profissional.\n\nCONVERSAS:\n${JSON.stringify(recentMessages)}`;
+
+        const currentAI = genAIs[0];
+        const result = await currentAI.models.generateContent({
+            model: "gemini-3-flash-preview",
+            contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        });
+
+        res.send({ summary: result.text });
+    } catch (e: any) {
+        res.status(500).send({ error: e.message });
+    }
+});
+
 // Rota de Health Check
 app.get('/health', (req, res) => res.send("TechStar Bot is Alive 24h"));
 
@@ -182,6 +224,32 @@ app.get('/', (req, res) => {
                         SALVAR_ALTERAÇÕES
                     </button>
                 </div>
+            </section>
+        </div>
+
+        <!-- Analytics & History Section -->
+        <div class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-8">
+            <!-- Chat List -->
+            <section class="hacker-border p-6 rounded-lg bg-black md:col-span-1">
+                <h2 class="text-xl mb-4 hacker-text underline">CONVERSAS_RECENTES</h2>
+                <div id="chat-list" class="space-y-2 max-h-[400px] overflow-y-auto pr-2">
+                    <p class="text-gray-500 text-xs text-center">Nenhum chat encontrado.</p>
+                </div>
+            </section>
+
+            <!-- Chat Viewer -->
+            <section class="hacker-border p-6 rounded-lg bg-black md:col-span-2">
+                <h2 class="text-xl mb-4 hacker-text underline">VISUALIZADOR_DE_CHAT</h2>
+                <div id="chat-viewer" class="h-[350px] overflow-y-auto border border-gray-800 p-4 rounded bg-[#050505] space-y-4 mb-4">
+                    <p class="text-gray-500 text-center mt-20">Selecione uma conversa ao lado.</p>
+                </div>
+                <div id="ai-analysis-container" class="hidden p-4 border border-blue-900 bg-blue-900/10 rounded">
+                    <h3 class="text-blue-400 text-xs font-bold uppercase mb-2">Insights da IA (Gemini)</h3>
+                    <div id="ai-summary" class="text-sm text-blue-200 italic"></div>
+                </div>
+                <button onclick="analyzeChats()" class="mt-4 w-full bg-blue-900 hover:bg-blue-700 text-white font-bold py-2 rounded transition-all border border-blue-400">
+                    GERAR_INSIGHTS_IA
+                </button>
             </section>
         </div>
 
@@ -271,11 +339,78 @@ app.get('/', (req, res) => {
             }
         }
 
+        async function fetchChats() {
+            try {
+                const res = await fetch('/api/chats');
+                const data = await res.json();
+                const list = document.getElementById('chat-list');
+                list.innerHTML = '';
+                
+                if (data.length === 0) {
+                    list.innerHTML = '<p class="text-gray-500 text-xs text-center">Nenhum chat encontrado.</p>';
+                    return;
+                }
+
+                data.forEach(chat => {
+                    const btn = document.createElement('button');
+                    btn.className = 'w-full text-left p-2 border border-gray-800 rounded hover:border-green-500 transition-all text-xs truncate';
+                    btn.innerText = chat.jid.split('@')[0];
+                    btn.onclick = () => loadChat(chat.jid);
+                    list.appendChild(btn);
+                });
+            } catch (e) {}
+        }
+
+        async function loadChat(jid) {
+            try {
+                const res = await fetch('/api/chat/' + encodeURIComponent(jid));
+                const data = await res.json();
+                const viewer = document.getElementById('chat-viewer');
+                viewer.innerHTML = '';
+                
+                data.forEach(msg => {
+                    const div = document.createElement('div');
+                    const isBot = msg.role === 'model';
+                    div.className = 'max-w-[80%] p-2 rounded text-xs ' + (isBot ? 'ml-auto bg-green-900/20 border border-green-900/50' : 'mr-auto bg-gray-800');
+                    
+                    const time = new Date(msg.timestamp).toLocaleString();
+                    const roleName = isBot ? 'TECHSTAR_BOT' : 'USER';
+                    const roleClass = isBot ? 'text-green-400' : 'text-blue-400';
+                    
+                    div.innerHTML = 
+                        '<p class="font-bold mb-1 ' + roleClass + '">' + roleName + '</p>' +
+                        '<p>' + msg.text + '</p>' +
+                        '<p class="text-[8px] text-gray-500 mt-1 text-right">' + time + '</p>';
+                    
+                    viewer.appendChild(div);
+                });
+                viewer.scrollTop = viewer.scrollHeight;
+            } catch (e) {}
+        }
+
+        async function analyzeChats() {
+            const container = document.getElementById('ai-analysis-container');
+            const summary = document.getElementById('ai-summary');
+            summary.innerText = "Analisando conversas com Gemini...";
+            container.classList.remove('hidden');
+
+            try {
+                const res = await fetch('/api/analyze-chats');
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                summary.innerText = data.summary;
+            } catch (e) {
+                summary.innerText = "Erro na análise: " + e.message;
+            }
+        }
+
         setInterval(fetchStatus, 5000);
         setInterval(fetchQR, 5000);
+        setInterval(fetchChats, 10000);
         fetchConfig();
         fetchStatus();
         fetchQR();
+        fetchChats();
     </script>
 </body>
 </html>
