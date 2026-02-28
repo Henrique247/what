@@ -9,13 +9,9 @@ import pino from 'pino';
 import path from 'path';
 import { Boom } from '@hapi/boom';
 import Database from 'better-sqlite3';
-import multer from 'multer';
-import * as pdf from 'pdf-parse';
 
 const app = express();
 app.use(express.json());
-
-const upload = multer({ storage: multer.memoryStorage() });
 
 // Database Setup
 const db = new Database('bot_data.db');
@@ -115,31 +111,6 @@ app.get('/api/config', (req, res) => {
 // Rota de Health Check
 app.get('/health', (req, res) => res.send("TechStar Bot is Alive 24h"));
 
-// Rota para Upload de Arquivo de Conhecimento
-app.post('/api/upload-knowledge', upload.single('file'), async (req: any, res) => {
-    try {
-        if (!req.file) return res.status(400).send({ error: "Nenhum arquivo enviado" });
-
-        let text = "";
-        if (req.file.mimetype === 'application/pdf') {
-            const parser = new pdf.PDFParse({ data: req.file.buffer });
-            const result = await parser.getText();
-            text = result.text;
-            await parser.destroy();
-        } else {
-            text = req.file.buffer.toString('utf-8');
-        }
-
-        // Limpeza básica do texto extraído
-        text = text.replace(/\n\s*\n/g, '\n').trim();
-
-        res.send({ text });
-    } catch (error) {
-        console.error("Erro no processamento do arquivo:", error);
-        res.status(500).send({ error: "Erro ao processar o arquivo" });
-    }
-});
-
 // Serve Frontend
 app.get('/', (req, res) => {
     res.send(`
@@ -194,13 +165,6 @@ app.get('/', (req, res) => {
                     <div>
                         <label class="block text-xs uppercase mb-1 hacker-text">Base de Conhecimento (Treinamento)</label>
                         <textarea id="knowledgeBase" rows="5" class="w-full hacker-input p-2 rounded text-sm" placeholder="Insira aqui informações sobre a TechStar, produtos, preços, etc..."></textarea>
-                        <div class="mt-2 flex gap-2">
-                            <input type="file" id="fileInput" class="hidden" accept=".txt,.pdf">
-                            <button onclick="document.getElementById('fileInput').click()" class="text-[10px] bg-gray-800 hover:bg-gray-700 px-2 py-1 rounded border border-gray-600">
-                                UPLOAD_ARQUIVO (.txt, .pdf)
-                            </button>
-                            <span id="upload-status" class="text-[10px] text-gray-500 self-center"></span>
-                        </div>
                     </div>
                     <div>
                         <label class="block text-xs uppercase mb-1 hacker-text">Gemini API Keys (Separe por vírgula para rotação)</label>
@@ -214,7 +178,7 @@ app.get('/', (req, res) => {
                         <label class="block text-xs uppercase mb-1 hacker-text">Mensagem de Saída</label>
                         <input id="exitMsg" type="text" class="w-full hacker-input p-2 rounded text-sm">
                     </div>
-                    <button id="saveConfigBtn" class="w-full bg-green-900 hover:bg-green-700 text-white font-bold py-2 rounded transition-all border border-green-400">
+                    <button onclick="saveConfig()" class="w-full bg-green-900 hover:bg-green-700 text-white font-bold py-2 rounded transition-all border border-green-400">
                         SALVAR_ALTERAÇÕES
                     </button>
                 </div>
@@ -306,37 +270,6 @@ app.get('/', (req, res) => {
                 alert('Erro ao salvar configuração');
             }
         }
-
-        document.getElementById('fileInput').onchange = async (e) => {
-            const file = e.target.files[0];
-            if (!file) return;
-
-            const status = document.getElementById('upload-status');
-            status.innerText = "Processando...";
-            
-            const formData = new FormData();
-            formData.append('file', file);
-
-            try {
-                const res = await fetch('/api/upload-knowledge', {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await res.json();
-                if (data.text) {
-                    const kb = document.getElementById('knowledgeBase');
-                    kb.value += (kb.value ? "\n\n" : "") + data.text;
-                    status.innerText = "Sucesso!";
-                    setTimeout(() => status.innerText = "", 3000);
-                } else {
-                    status.innerText = "Erro no processamento";
-                }
-            } catch (err) {
-                status.innerText = "Erro no upload";
-            }
-        };
-
-        document.getElementById('saveConfigBtn').onclick = saveConfig;
 
         setInterval(fetchStatus, 5000);
         setInterval(fetchQR, 5000);
