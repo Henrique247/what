@@ -21,6 +21,45 @@ app.use(express.json());
 const firebaseApp = initializeApp(firebaseConfig);
 const firestoreDb = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
+enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
+}
+
+interface FirestoreErrorInfo {
+  error: string;
+  operationType: OperationType;
+  path: string | null;
+  authInfo: {
+    userId: string | undefined;
+    email: string | null | undefined;
+    emailVerified: boolean | undefined;
+    isAnonymous: boolean | undefined;
+    tenantId: string | null | undefined;
+  }
+}
+
+function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const errInfo: FirestoreErrorInfo = {
+    error: error instanceof Error ? error.message : String(error),
+    authInfo: {
+      userId: undefined, // No user on server-side usually
+      email: undefined,
+      emailVerified: undefined,
+      isAnonymous: undefined,
+      tenantId: undefined,
+    },
+    operationType,
+    path
+  }
+  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  throw new Error(JSON.stringify(errInfo));
+}
+
 // Migration Logic
 async function migrateIfNeeded() {
     const dbPath = path.join(process.cwd(), 'bot_data.db');
@@ -32,13 +71,22 @@ async function migrateIfNeeded() {
             
             for (const bot of bots) {
                 const botRef = doc(firestoreDb, 'bots', bot.id);
-                const botSnap = await getDoc(botRef);
+                let botSnap;
+                try {
+                    botSnap = await getDoc(botRef);
+                } catch (e) {
+                    handleFirestoreError(e, OperationType.GET, `bots/${bot.id}`);
+                }
                 if (!botSnap.exists()) {
                     console.log(`[Migration] Migrando bot: ${bot.name} (${bot.id})`);
-                    await setDoc(botRef, {
-                        ...bot,
-                        createdAt: serverTimestamp()
-                    });
+                    try {
+                        await setDoc(botRef, {
+                            ...bot,
+                            createdAt: serverTimestamp()
+                        });
+                    } catch (e) {
+                        handleFirestoreError(e, OperationType.WRITE, `bots/${bot.id}`);
+                    }
                     
                     // Migrate history
                     const history = sqliteDb.prepare('SELECT * FROM history WHERE botId = ?').all(bot.id) as any[];
@@ -50,7 +98,11 @@ async function migrateIfNeeded() {
                             timestamp: serverTimestamp()
                         });
                     }
-                    await batch.commit();
+                    try {
+                        await batch.commit();
+                    } catch (e) {
+                        handleFirestoreError(e, OperationType.WRITE, `bots/${bot.id}/history (batch)`);
+                    }
                 }
             }
             sqliteDb.close();
@@ -67,13 +119,17 @@ migrateIfNeeded();
 async function saveMessage(botId: string, jid: string, role: 'user' | 'model', text: string) {
     const botRef = doc(firestoreDb, 'bots', botId);
     const historyRef = collection(botRef, 'history');
-    await addDoc(historyRef, {
-        botId,
-        jid,
-        role,
-        text,
-        timestamp: serverTimestamp()
-    });
+    try {
+        await addDoc(historyRef, {
+            botId,
+            jid,
+            role,
+            text,
+            timestamp: serverTimestamp()
+        });
+    } catch (e) {
+        handleFirestoreError(e, OperationType.CREATE, `bots/${botId}/history`);
+    }
     
     // Keep only last 20 messages per user
     const q = query(
@@ -83,11 +139,21 @@ async function saveMessage(botId: string, jid: string, role: 'user' | 'model', t
         limit(100) // Get more to find the offset
     );
     
-    const snapshot = await getDocs(q);
-    if (snapshot.docs.length > 20) {
+    let snapshot;
+    try {
+        snapshot = await getDocs(q);
+    } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, `bots/${botId}/history`);
+    }
+    
+    if (snapshot && snapshot.docs.length > 20) {
         const batch = writeBatch(firestoreDb);
         snapshot.docs.slice(20).forEach(doc => batch.delete(doc.ref));
-        await batch.commit();
+        try {
+            await batch.commit();
+        } catch (e) {
+            handleFirestoreError(e, OperationType.DELETE, `bots/${botId}/history (cleanup)`);
+        }
     }
 }
 
@@ -100,7 +166,13 @@ async function getHistory(botId: string, jid: string) {
         orderBy('timestamp', 'asc')
     );
     
-    const snapshot = await getDocs(q);
+    let snapshot;
+    try {
+        snapshot = await getDocs(q);
+    } catch (e) {
+        handleFirestoreError(e, OperationType.LIST, `bots/${botId}/history`);
+    }
+    
     return snapshot.docs.map(doc => {
         const data = doc.data();
         return {

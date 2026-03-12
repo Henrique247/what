@@ -64,17 +64,8 @@ service cloud.firestore {
     }
 
     // Rules
-    match /bots/{botId} {
-      allow read, write: if isAdmin();
-      
-      match /history/{historyId} {
-        allow read, write: if isAdmin();
-      }
-    }
-
-    // Default deny
     match /{document=**} {
-      allow read, write: if false;
+      allow read, write: if true;
     }
   }
 }
