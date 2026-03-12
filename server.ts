@@ -10,7 +10,7 @@ import path from 'path';
 import { Boom } from '@hapi/boom';
 import * as admin from 'firebase-admin';
 import Database from 'better-sqlite3';
-import firebaseConfig from './firebase-applet-config.json';
+const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
 
 const app = express();
 app.use(express.json());
