@@ -8,20 +8,18 @@ import qrcode from 'qrcode';
 import pino from 'pino';
 import path from 'path';
 import { Boom } from '@hapi/boom';
-import * as admin from 'firebase-admin';
+import { initializeApp } from 'firebase/app';
+import { getFirestore, collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, query, where, orderBy, limit, serverTimestamp, writeBatch, FieldValue, Timestamp } from 'firebase/firestore';
 import Database from 'better-sqlite3';
+
 const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
 
 const app = express();
 app.use(express.json());
 
 // Firebase Setup
-admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}')),
-    projectId: firebaseConfig.projectId
-});
-
-const firestoreDb = admin.firestore();
+const firebaseApp = initializeApp(firebaseConfig);
+const firestoreDb = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
 // Migration Logic
 async function migrateIfNeeded() {
@@ -33,23 +31,23 @@ async function migrateIfNeeded() {
             const bots = sqliteDb.prepare('SELECT * FROM bots').all() as any[];
             
             for (const bot of bots) {
-                const botRef = firestoreDb.collection('bots').doc(bot.id);
-                const exists = (await botRef.get()).exists;
-                if (!exists) {
+                const botRef = doc(firestoreDb, 'bots', bot.id);
+                const botSnap = await getDoc(botRef);
+                if (!botSnap.exists()) {
                     console.log(`[Migration] Migrando bot: ${bot.name} (${bot.id})`);
-                    await botRef.set({
+                    await setDoc(botRef, {
                         ...bot,
-                        createdAt: admin.firestore.FieldValue.serverTimestamp()
+                        createdAt: serverTimestamp()
                     });
                     
                     // Migrate history
                     const history = sqliteDb.prepare('SELECT * FROM history WHERE botId = ?').all(bot.id) as any[];
-                    const batch = firestoreDb.batch();
+                    const batch = writeBatch(firestoreDb);
                     for (const h of history) {
-                        const hRef = botRef.collection('history').doc();
+                        const hRef = doc(collection(botRef, 'history'));
                         batch.set(hRef, {
                             ...h,
-                            timestamp: admin.firestore.FieldValue.serverTimestamp()
+                            timestamp: serverTimestamp()
                         });
                     }
                     await batch.commit();
@@ -67,33 +65,42 @@ async function migrateIfNeeded() {
 migrateIfNeeded();
 
 async function saveMessage(botId: string, jid: string, role: 'user' | 'model', text: string) {
-    const historyRef = firestoreDb.collection('bots').doc(botId).collection('history');
-    await historyRef.add({
+    const botRef = doc(firestoreDb, 'bots', botId);
+    const historyRef = collection(botRef, 'history');
+    await addDoc(historyRef, {
         botId,
         jid,
         role,
         text,
-        timestamp: admin.firestore.FieldValue.serverTimestamp()
+        timestamp: serverTimestamp()
     });
     
     // Keep only last 20 messages per user
-    const snapshot = await historyRef
-        .where('jid', '==', jid)
-        .orderBy('timestamp', 'desc')
-        .offset(20)
-        .get();
+    const q = query(
+        historyRef,
+        where('jid', '==', jid),
+        orderBy('timestamp', 'desc'),
+        limit(100) // Get more to find the offset
+    );
     
-    const batch = firestoreDb.batch();
-    snapshot.docs.forEach(doc => batch.delete(doc.ref));
-    await batch.commit();
+    const snapshot = await getDocs(q);
+    if (snapshot.docs.length > 20) {
+        const batch = writeBatch(firestoreDb);
+        snapshot.docs.slice(20).forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
+    }
 }
 
 async function getHistory(botId: string, jid: string) {
-    const snapshot = await firestoreDb.collection('bots').doc(botId).collection('history')
-        .where('jid', '==', jid)
-        .orderBy('timestamp', 'asc')
-        .get();
+    const botRef = doc(firestoreDb, 'bots', botId);
+    const historyRef = collection(botRef, 'history');
+    const q = query(
+        historyRef,
+        where('jid', '==', jid),
+        orderBy('timestamp', 'asc')
+    );
     
+    const snapshot = await getDocs(q);
     return snapshot.docs.map(doc => {
         const data = doc.data();
         return {
@@ -129,7 +136,7 @@ async function startBot(botId: string) {
     console.log(`[Bot ${botId}] Iniciando bot...`);
 
     try {
-        const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+        const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
         const bot = botDoc.data();
         if (!bot || !bot.active) {
             console.log(`[Bot ${botId}] Bot inativo ou não encontrado.`);
@@ -201,7 +208,7 @@ async function startBot(botId: string) {
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             
             // Re-check if bot is still active in DB before reconnecting
-            const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+            const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
             const bot = botDoc.data();
             if (!bot || !bot.active) {
                 console.log(`[Bot ${botId}] Bot desativado no banco, não irá reconectar.`);
@@ -236,7 +243,7 @@ async function startBot(botId: string) {
 
     sock.ev.on('group-participants.update', async (anu: any) => {
         console.log(`[Bot ${botId}] Evento group-participants.update recebido:`, anu.action, anu.id);
-        const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+        const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
         const currentBot = botDoc.data();
         if (!currentBot || !currentBot.active) {
             console.log(`[Bot ${botId}] Bot inativo ou não encontrado, ignorando evento de grupo.`);
@@ -301,7 +308,7 @@ async function startBot(botId: string) {
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || "";
         
         // Reload bot config for each message to ensure latest settings
-        const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+        const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
         const currentBot = botDoc.data();
         if (!currentBot || !currentBot.active) return;
 
@@ -401,7 +408,8 @@ async function startBot(botId: string) {
 
 // API Routes for Multi-Bot
 app.get('/api/admin/bots', async (req, res) => {
-    const snapshot = await firestoreDb.collection('bots').orderBy('createdAt', 'desc').get();
+    const q = query(collection(firestoreDb, 'bots'), orderBy('createdAt', 'desc'));
+    const snapshot = await getDocs(q);
     const bots = snapshot.docs.map(doc => doc.data());
     res.send(bots.map((b: any) => ({
         ...b,
@@ -421,7 +429,7 @@ app.post('/api/admin/bots', async (req, res) => {
         exitMsg: "Até logo!",
         geminiKeys: "",
         active: 1,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: serverTimestamp(),
         groupWelcomeEnabled: 0,
         groupWelcomeMsg: "",
         groupExitEnabled: 0,
@@ -435,7 +443,7 @@ app.post('/api/admin/bots', async (req, res) => {
         analysisInstructions: "Analise esta imagem ou documento detalhadamente. Procure por informações relevantes e descreva o que vê."
     };
     
-    await firestoreDb.collection('bots').doc(id).set(botData);
+    await setDoc(doc(firestoreDb, 'bots', id), botData);
     
     console.log(`[Admin] Criando e iniciando bot: ${name} (${id})`);
     startBot(id);
@@ -444,13 +452,13 @@ app.post('/api/admin/bots', async (req, res) => {
 });
 
 app.post('/api/admin/bots/:id/toggle', async (req, res) => {
-    const botRef = firestoreDb.collection('bots').doc(req.params.id);
-    const botDoc = await botRef.get();
+    const botRef = doc(firestoreDb, 'bots', req.params.id);
+    const botDoc = await getDoc(botRef);
     const bot = botDoc.data();
     if (!bot) return res.status(404).send({ error: "Bot não encontrado" });
     
     const newState = bot.active ? 0 : 1;
-    await botRef.update({ active: newState });
+    await updateDoc(botRef, { active: newState });
     
     if (newState) startBot(req.params.id);
     else {
@@ -469,7 +477,7 @@ app.post('/api/admin/bots/:id/toggle', async (req, res) => {
 });
 
 app.get('/api/bot/:id/config', async (req, res) => {
-    const botDoc = await firestoreDb.collection('bots').doc(req.params.id).get();
+    const botDoc = await getDoc(doc(firestoreDb, 'bots', req.params.id));
     const bot = botDoc.data();
     if (!bot) return res.status(404).send({ error: "Bot não encontrado" });
     res.send({
@@ -487,7 +495,9 @@ app.post('/api/bot/:id/config', async (req, res) => {
         memoryEnabled, analysisEnabled, analysisInstructions
     } = req.body;
     
-    await firestoreDb.collection('bots').doc(req.params.id).update({
+    const botRef = doc(firestoreDb, 'bots', req.params.id);
+    
+    await updateDoc(botRef, {
         name, systemPrompt, welcomeMsg, exitMsg, knowledgeBase, geminiKeys,
         groupWelcomeEnabled: groupWelcomeEnabled ? 1 : 0,
         groupWelcomeMsg,
@@ -559,11 +569,11 @@ app.delete('/api/admin/bots/:id', async (req, res) => {
         }
 
         // Delete from DB
-        await firestoreDb.collection('bots').doc(botId).delete();
-        // Note: Subcollections like history are not deleted automatically in Firestore
-        // We should ideally delete the history subcollection too, but for simplicity we'll leave it or delete it in a loop
-        const historySnapshot = await firestoreDb.collection('bots').doc(botId).collection('history').get();
-        const batch = firestoreDb.batch();
+        const botRef = doc(firestoreDb, 'bots', botId);
+        await deleteDoc(botRef);
+        
+        const historySnapshot = await getDocs(collection(botRef, 'history'));
+        const batch = writeBatch(firestoreDb);
         historySnapshot.docs.forEach(doc => batch.delete(doc.ref));
         await batch.commit();
 
@@ -576,7 +586,8 @@ app.delete('/api/admin/bots/:id', async (req, res) => {
 
 // Initialize existing active bots
 async function initBots() {
-    const snapshot = await firestoreDb.collection('bots').where('active', '==', 1).get();
+    const q = query(collection(firestoreDb, 'bots'), where('active', '==', 1));
+    const snapshot = await getDocs(q);
     snapshot.docs.forEach(doc => startBot(doc.id));
 }
 initBots();
@@ -943,7 +954,7 @@ app.get('/', (req, res) => {
 
 // Client Management Page
 app.get('/manage/:id', async (req, res) => {
-    const botDoc = await firestoreDb.collection('bots').doc(req.params.id).get();
+    const botDoc = await getDoc(doc(firestoreDb, 'bots', req.params.id));
     const bot = botDoc.data();
     if (!bot) return res.status(404).send("Bot não encontrado");
 
