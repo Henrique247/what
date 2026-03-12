@@ -1,98 +1,106 @@
 import express from 'express';
 import dotenv from 'dotenv';
 dotenv.config();
-import { default as makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } from '@whiskeysockets/baileys';
+import { default as makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
 import { GoogleGenAI } from "@google/genai";
 import fs from 'fs';
 import qrcode from 'qrcode';
 import pino from 'pino';
 import path from 'path';
 import { Boom } from '@hapi/boom';
+import * as admin from 'firebase-admin';
 import Database from 'better-sqlite3';
+import firebaseConfig from './firebase-applet-config.json';
 
 const app = express();
 app.use(express.json());
 
-// Database Setup
-const db = new Database('bot_data.db');
-db.exec(`
-    CREATE TABLE IF NOT EXISTS bots (
-        id TEXT PRIMARY KEY,
-        name TEXT,
-        systemPrompt TEXT,
-        welcomeMsg TEXT,
-        exitMsg TEXT,
-        knowledgeBase TEXT,
-        geminiKeys TEXT,
-        active INTEGER DEFAULT 1,
-        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-        groupWelcomeEnabled INTEGER DEFAULT 0,
-        groupWelcomeMsg TEXT,
-        groupExitEnabled INTEGER DEFAULT 0,
-        groupExitMsg TEXT,
-        respondInGroups INTEGER DEFAULT 1,
-        respondInPrivate INTEGER DEFAULT 1,
-        privateWelcomeEnabled INTEGER DEFAULT 0,
-        privateExitEnabled INTEGER DEFAULT 0
-    );
+// Firebase Setup
+admin.initializeApp({
+    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT || '{}')),
+    projectId: firebaseConfig.projectId
+});
 
-    CREATE TABLE IF NOT EXISTS history (
-        botId TEXT,
-        jid TEXT,
-        role TEXT,
-        text TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-`);
+const firestoreDb = admin.firestore();
 
-// Migration: Add botId to history if it doesn't exist
-try {
-    db.prepare('SELECT botId FROM history LIMIT 1').get();
-} catch (e) {
-    console.log("Migrando tabela history para incluir botId...");
-    db.exec('ALTER TABLE history ADD COLUMN botId TEXT');
+// Migration Logic
+async function migrateIfNeeded() {
+    const dbPath = path.join(process.cwd(), 'bot_data.db');
+    if (fs.existsSync(dbPath)) {
+        console.log("[Migration] SQLite detectado. Iniciando migração para Firestore...");
+        try {
+            const sqliteDb = new Database(dbPath);
+            const bots = sqliteDb.prepare('SELECT * FROM bots').all() as any[];
+            
+            for (const bot of bots) {
+                const botRef = firestoreDb.collection('bots').doc(bot.id);
+                const exists = (await botRef.get()).exists;
+                if (!exists) {
+                    console.log(`[Migration] Migrando bot: ${bot.name} (${bot.id})`);
+                    await botRef.set({
+                        ...bot,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp()
+                    });
+                    
+                    // Migrate history
+                    const history = sqliteDb.prepare('SELECT * FROM history WHERE botId = ?').all(bot.id) as any[];
+                    const batch = firestoreDb.batch();
+                    for (const h of history) {
+                        const hRef = botRef.collection('history').doc();
+                        batch.set(hRef, {
+                            ...h,
+                            timestamp: admin.firestore.FieldValue.serverTimestamp()
+                        });
+                    }
+                    await batch.commit();
+                }
+            }
+            sqliteDb.close();
+            // Rename file to avoid re-migration
+            fs.renameSync(dbPath, dbPath + '.migrated');
+            console.log("[Migration] Migração concluída com sucesso!");
+        } catch (e) {
+            console.error("[Migration] Erro durante a migração:", e);
+        }
+    }
 }
+migrateIfNeeded();
 
-// Migration: Add group features to bots if they don't exist
-try {
-    db.prepare('SELECT groupWelcomeEnabled FROM bots LIMIT 1').get();
-} catch (e) {
-    console.log("Migrando tabela bots para incluir recursos de grupo...");
-    db.exec('ALTER TABLE bots ADD COLUMN groupWelcomeEnabled INTEGER DEFAULT 0');
-    db.exec('ALTER TABLE bots ADD COLUMN groupWelcomeMsg TEXT');
-    db.exec('ALTER TABLE bots ADD COLUMN groupExitEnabled INTEGER DEFAULT 0');
-    db.exec('ALTER TABLE bots ADD COLUMN groupExitMsg TEXT');
-}
-
-// Migration: Add more granular controls
-try {
-    db.prepare('SELECT respondInGroups FROM bots LIMIT 1').get();
-} catch (e) {
-    console.log("Migrando tabela bots para incluir controles granulares...");
-    db.exec('ALTER TABLE bots ADD COLUMN respondInGroups INTEGER DEFAULT 1');
-    db.exec('ALTER TABLE bots ADD COLUMN respondInPrivate INTEGER DEFAULT 1');
-    db.exec('ALTER TABLE bots ADD COLUMN privateWelcomeEnabled INTEGER DEFAULT 0');
-    db.exec('ALTER TABLE bots ADD COLUMN privateExitEnabled INTEGER DEFAULT 0');
-}
-
-function saveMessage(botId: string, jid: string, role: 'user' | 'model', text: string) {
-    const stmt = db.prepare('INSERT INTO history (botId, jid, role, text) VALUES (?, ?, ?, ?)');
-    stmt.run(botId, jid, role, text);
+async function saveMessage(botId: string, jid: string, role: 'user' | 'model', text: string) {
+    const historyRef = firestoreDb.collection('bots').doc(botId).collection('history');
+    await historyRef.add({
+        botId,
+        jid,
+        role,
+        text,
+        timestamp: admin.firestore.FieldValue.serverTimestamp()
+    });
     
-    db.prepare(`
-        DELETE FROM history 
-        WHERE botId = ? AND jid = ? AND timestamp NOT IN (
-            SELECT timestamp FROM history WHERE botId = ? AND jid = ? ORDER BY timestamp DESC LIMIT 20
-        )
-    `).run(botId, jid, botId, jid);
+    // Keep only last 20 messages per user
+    const snapshot = await historyRef
+        .where('jid', '==', jid)
+        .orderBy('timestamp', 'desc')
+        .offset(20)
+        .get();
+    
+    const batch = firestoreDb.batch();
+    snapshot.docs.forEach(doc => batch.delete(doc.ref));
+    await batch.commit();
 }
 
-function getHistory(botId: string, jid: string) {
-    const rows = db.prepare('SELECT role, text FROM history WHERE botId = ? AND jid = ? ORDER BY timestamp ASC').all(botId, jid);
-    return rows.map((r: any) => ({
-        role: r.role,
-        parts: [{ text: r.text }]
-    }));
+async function getHistory(botId: string, jid: string) {
+    const snapshot = await firestoreDb.collection('bots').doc(botId).collection('history')
+        .where('jid', '==', jid)
+        .orderBy('timestamp', 'asc')
+        .get();
+    
+    return snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+            role: data.role,
+            parts: [{ text: data.text }]
+        };
+    });
 }
 
 // Multi-Bot Management
@@ -121,7 +129,8 @@ async function startBot(botId: string) {
     console.log(`[Bot ${botId}] Iniciando bot...`);
 
     try {
-        const bot = db.prepare('SELECT * FROM bots WHERE id = ?').get(botId) as any;
+        const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+        const bot = botDoc.data();
         if (!bot || !bot.active) {
             console.log(`[Bot ${botId}] Bot inativo ou não encontrado.`);
             startingBots.delete(botId);
@@ -167,7 +176,7 @@ async function startBot(botId: string) {
 
         sock.ev.on('creds.update', saveCreds);
 
-        sock.ev.on('connection.update', (update: any) => {
+        sock.ev.on('connection.update', async (update: any) => {
             const { connection, lastDisconnect, qr } = update;
             
             if (qr) {
@@ -192,7 +201,8 @@ async function startBot(botId: string) {
             const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             
             // Re-check if bot is still active in DB before reconnecting
-            const bot = db.prepare('SELECT active FROM bots WHERE id = ?').get(botId) as any;
+            const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+            const bot = botDoc.data();
             if (!bot || !bot.active) {
                 console.log(`[Bot ${botId}] Bot desativado no banco, não irá reconectar.`);
                 activeSocks.delete(botId);
@@ -226,7 +236,8 @@ async function startBot(botId: string) {
 
     sock.ev.on('group-participants.update', async (anu: any) => {
         console.log(`[Bot ${botId}] Evento group-participants.update recebido:`, anu.action, anu.id);
-        const currentBot = db.prepare('SELECT * FROM bots WHERE id = ?').get(botId) as any;
+        const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+        const currentBot = botDoc.data();
         if (!currentBot || !currentBot.active) {
             console.log(`[Bot ${botId}] Bot inativo ou não encontrado, ignorando evento de grupo.`);
             return;
@@ -285,12 +296,22 @@ async function startBot(botId: string) {
 
         const jid = msg.key.remoteJid;
         const isGroup = jid.endsWith('@g.us');
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-        if (!text) return;
-
+        
+        const messageType = Object.keys(msg.message)[0];
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || "";
+        
         // Reload bot config for each message to ensure latest settings
-        const currentBot = db.prepare('SELECT * FROM bots WHERE id = ?').get(botId) as any;
+        const botDoc = await firestoreDb.collection('bots').doc(botId).get();
+        const currentBot = botDoc.data();
         if (!currentBot || !currentBot.active) return;
+
+        // Check for media
+        const isImage = messageType === 'imageMessage';
+        const isDocument = messageType === 'documentMessage';
+        const isPdf = isDocument && msg.message.documentMessage.mimetype === 'application/pdf';
+
+        if ((isImage || isPdf) && !currentBot.analysisEnabled) return;
+        if (!text && !isImage && !isPdf) return;
 
         // Check if bot should respond in this context
         if (isGroup && !currentBot.respondInGroups) return;
@@ -306,7 +327,7 @@ async function startBot(botId: string) {
         if (genAIs.length === 0) return;
 
         try {
-            const history = getHistory(botId, jid);
+            const history = currentBot.memoryEnabled ? await getHistory(botId, jid) : [];
             
             // Handle private welcome message (first contact)
             if (!isGroup && history.length === 0 && currentBot.privateWelcomeEnabled) {
@@ -314,7 +335,25 @@ async function startBot(botId: string) {
                 // Don't return, let Gemini process the first message too
             }
 
-            saveMessage(botId, jid, 'user', text);
+            const parts: any[] = [];
+            if (text) parts.push({ text });
+
+            if ((isImage || isPdf) && currentBot.analysisEnabled) {
+                console.log(`[Bot ${botId}] Baixando mídia para análise...`);
+                const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                const mimeType = isImage ? 'image/jpeg' : 'application/pdf';
+                parts.push({
+                    inlineData: {
+                        data: buffer.toString('base64'),
+                        mimeType
+                    }
+                });
+                if (currentBot.analysisInstructions) {
+                    parts.push({ text: `\n\nINSTRUÇÕES DE ANÁLISE:\n${currentBot.analysisInstructions}` });
+                }
+            }
+
+            await saveMessage(botId, jid, 'user', text || "[Mídia enviada]");
 
             const fullSystemPrompt = `${currentBot.systemPrompt}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
             
@@ -329,7 +368,7 @@ async function startBot(botId: string) {
                     const currentAI = genAIs[keyIndex % genAIs.length];
                     response = await currentAI.models.generateContent({
                         model: "gemini-3-flash-preview",
-                        contents: [...history, { role: 'user', parts: [{ text }] }],
+                        contents: [...history, { role: 'user', parts }],
                         config: { systemInstruction: fullSystemPrompt }
                     });
                     currentKeyIndexes.set(botId, keyIndex % genAIs.length);
@@ -347,7 +386,7 @@ async function startBot(botId: string) {
 
             const responseText = response?.text;
             if (responseText) {
-                saveMessage(botId, jid, 'model', responseText);
+                await saveMessage(botId, jid, 'model', responseText);
                 await sock.sendMessage(jid, { text: responseText });
             }
         } catch (e) {
@@ -361,8 +400,9 @@ async function startBot(botId: string) {
 }
 
 // API Routes for Multi-Bot
-app.get('/api/admin/bots', (req, res) => {
-    const bots = db.prepare('SELECT * FROM bots ORDER BY createdAt DESC').all();
+app.get('/api/admin/bots', async (req, res) => {
+    const snapshot = await firestoreDb.collection('bots').orderBy('createdAt', 'desc').get();
+    const bots = snapshot.docs.map(doc => doc.data());
     res.send(bots.map((b: any) => ({
         ...b,
         status: connectionStatuses.get(b.id) || "Desconectado",
@@ -370,11 +410,32 @@ app.get('/api/admin/bots', (req, res) => {
     })));
 });
 
-app.post('/api/admin/bots', (req, res) => {
+app.post('/api/admin/bots', async (req, res) => {
     const { name } = req.body;
     const id = Math.random().toString(36).substring(2, 10);
-    db.prepare('INSERT INTO bots (id, name, systemPrompt, welcomeMsg, exitMsg, geminiKeys) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, name, "Você é um assistente útil.", "Olá!", "Até logo!", "");
+    const botData = {
+        id,
+        name,
+        systemPrompt: "Você é um assistente útil.",
+        welcomeMsg: "Olá!",
+        exitMsg: "Até logo!",
+        geminiKeys: "",
+        active: 1,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        groupWelcomeEnabled: 0,
+        groupWelcomeMsg: "",
+        groupExitEnabled: 0,
+        groupExitMsg: "",
+        respondInGroups: 1,
+        respondInPrivate: 1,
+        privateWelcomeEnabled: 0,
+        privateExitEnabled: 0,
+        memoryEnabled: 1,
+        analysisEnabled: 0,
+        analysisInstructions: "Analise esta imagem ou documento detalhadamente. Procure por informações relevantes e descreva o que vê."
+    };
+    
+    await firestoreDb.collection('bots').doc(id).set(botData);
     
     console.log(`[Admin] Criando e iniciando bot: ${name} (${id})`);
     startBot(id);
@@ -382,10 +443,14 @@ app.post('/api/admin/bots', (req, res) => {
     res.send({ id, status: "Bot criado e iniciando..." });
 });
 
-app.post('/api/admin/bots/:id/toggle', (req, res) => {
-    const bot = db.prepare('SELECT active FROM bots WHERE id = ?').get(req.params.id) as any;
+app.post('/api/admin/bots/:id/toggle', async (req, res) => {
+    const botRef = firestoreDb.collection('bots').doc(req.params.id);
+    const botDoc = await botRef.get();
+    const bot = botDoc.data();
+    if (!bot) return res.status(404).send({ error: "Bot não encontrado" });
+    
     const newState = bot.active ? 0 : 1;
-    db.prepare('UPDATE bots SET active = ? WHERE id = ?').run(newState, req.params.id);
+    await botRef.update({ active: newState });
     
     if (newState) startBot(req.params.id);
     else {
@@ -403,8 +468,9 @@ app.post('/api/admin/bots/:id/toggle', (req, res) => {
     res.send({ status: newState ? "Bot ativado" : "Bot desativado" });
 });
 
-app.get('/api/bot/:id/config', (req, res) => {
-    const bot = db.prepare('SELECT * FROM bots WHERE id = ?').get(req.params.id);
+app.get('/api/bot/:id/config', async (req, res) => {
+    const botDoc = await firestoreDb.collection('bots').doc(req.params.id).get();
+    const bot = botDoc.data();
     if (!bot) return res.status(404).send({ error: "Bot não encontrado" });
     res.send({
         ...bot,
@@ -413,24 +479,28 @@ app.get('/api/bot/:id/config', (req, res) => {
     });
 });
 
-app.post('/api/bot/:id/config', (req, res) => {
+app.post('/api/bot/:id/config', async (req, res) => {
     const { 
         name, systemPrompt, welcomeMsg, exitMsg, knowledgeBase, geminiKeys,
         groupWelcomeEnabled, groupWelcomeMsg, groupExitEnabled, groupExitMsg,
-        respondInGroups, respondInPrivate, privateWelcomeEnabled, privateExitEnabled
+        respondInGroups, respondInPrivate, privateWelcomeEnabled, privateExitEnabled,
+        memoryEnabled, analysisEnabled, analysisInstructions
     } = req.body;
-    db.prepare(`
-        UPDATE bots 
-        SET name = ?, systemPrompt = ?, welcomeMsg = ?, exitMsg = ?, knowledgeBase = ?, geminiKeys = ?,
-            groupWelcomeEnabled = ?, groupWelcomeMsg = ?, groupExitEnabled = ?, groupExitMsg = ?,
-            respondInGroups = ?, respondInPrivate = ?, privateWelcomeEnabled = ?, privateExitEnabled = ?
-        WHERE id = ?
-    `).run(
+    
+    await firestoreDb.collection('bots').doc(req.params.id).update({
         name, systemPrompt, welcomeMsg, exitMsg, knowledgeBase, geminiKeys,
-        groupWelcomeEnabled ? 1 : 0, groupWelcomeMsg, groupExitEnabled ? 1 : 0, groupExitMsg,
-        respondInGroups ? 1 : 0, respondInPrivate ? 1 : 0, privateWelcomeEnabled ? 1 : 0, privateExitEnabled ? 1 : 0,
-        req.params.id
-    );
+        groupWelcomeEnabled: groupWelcomeEnabled ? 1 : 0,
+        groupWelcomeMsg,
+        groupExitEnabled: groupExitEnabled ? 1 : 0,
+        groupExitMsg,
+        respondInGroups: respondInGroups ? 1 : 0,
+        respondInPrivate: respondInPrivate ? 1 : 0,
+        privateWelcomeEnabled: privateWelcomeEnabled ? 1 : 0,
+        privateExitEnabled: privateExitEnabled ? 1 : 0,
+        memoryEnabled: memoryEnabled ? 1 : 0,
+        analysisEnabled: analysisEnabled ? 1 : 0,
+        analysisInstructions
+    });
     res.send({ status: "Configuração salva!" });
 });
 
@@ -489,8 +559,13 @@ app.delete('/api/admin/bots/:id', async (req, res) => {
         }
 
         // Delete from DB
-        db.prepare('DELETE FROM bots WHERE id = ?').run(botId);
-        db.prepare('DELETE FROM history WHERE botId = ?').run(botId);
+        await firestoreDb.collection('bots').doc(botId).delete();
+        // Note: Subcollections like history are not deleted automatically in Firestore
+        // We should ideally delete the history subcollection too, but for simplicity we'll leave it or delete it in a loop
+        const historySnapshot = await firestoreDb.collection('bots').doc(botId).collection('history').get();
+        const batch = firestoreDb.batch();
+        historySnapshot.docs.forEach(doc => batch.delete(doc.ref));
+        await batch.commit();
 
         res.send({ status: "Bot apagado com sucesso!" });
     } catch (error) {
@@ -500,8 +575,11 @@ app.delete('/api/admin/bots/:id', async (req, res) => {
 });
 
 // Initialize existing active bots
-const allBots = db.prepare('SELECT id FROM bots WHERE active = 1').all() as any[];
-allBots.forEach(b => startBot(b.id));
+async function initBots() {
+    const snapshot = await firestoreDb.collection('bots').where('active', '==', 1).get();
+    snapshot.docs.forEach(doc => startBot(doc.id));
+}
+initBots();
 
 // Rota de Health Check
 app.get('/health', (req, res) => res.send("TechStar Bot is Alive 24h"));
@@ -617,7 +695,29 @@ app.get('/', (req, res) => {
                 </div>
 
                 <div class="hacker-border p-4 rounded-lg bg-black/50 space-y-4">
-                    <h3 class="text-xs hacker-text underline uppercase">Recursos de Privado</h3>
+                    <h3 class="text-xs hacker-text underline uppercase">Recursos Avançados</h3>
+                    <div class="flex items-center justify-between">
+                        <div class="flex flex-col">
+                            <label class="text-xs uppercase hacker-text">Memória de Contexto</label>
+                            <p class="text-[8px] text-gray-500">Lembra conversas passadas para evitar repetições.</p>
+                        </div>
+                        <input id="memoryEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                    </div>
+                    
+                    <div class="border-t border-gray-800 pt-4">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex flex-col">
+                                <label class="text-xs uppercase hacker-text">Análise de Mídia (Imagem/PDF)</label>
+                                <p class="text-[8px] text-gray-500">Permite ao bot "ver" imagens e ler PDFs.</p>
+                            </div>
+                            <input id="analysisEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                        </div>
+                        <label class="block text-[10px] uppercase mb-1 hacker-text">Instruções de Análise</label>
+                        <textarea id="analysisInstructions" rows="3" class="w-full hacker-input p-2 rounded text-xs" placeholder="O que o bot deve procurar ou como deve analisar a mídia..."></textarea>
+                    </div>
+                </div>
+
+                <div class="hacker-border p-4 rounded-lg bg-black/50 space-y-4">
                     <div class="flex items-center justify-between">
                         <label class="text-xs uppercase hacker-text">Boas-vindas (Primeiro Contato)</label>
                         <input id="privateWelcomeEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
@@ -767,6 +867,10 @@ app.get('/', (req, res) => {
             document.getElementById('groupExitEnabled').checked = bot.groupExitEnabled === 1;
             document.getElementById('groupExitMsg').value = bot.groupExitMsg || "";
             
+            document.getElementById('memoryEnabled').checked = bot.memoryEnabled === 1;
+            document.getElementById('analysisEnabled').checked = bot.analysisEnabled === 1;
+            document.getElementById('analysisInstructions').value = bot.analysisInstructions || "";
+            
             document.getElementById('bot-modal').classList.remove('hidden');
             
             if (qrInterval) clearInterval(qrInterval);
@@ -815,7 +919,10 @@ app.get('/', (req, res) => {
                 groupWelcomeEnabled: document.getElementById('groupWelcomeEnabled').checked,
                 groupWelcomeMsg: document.getElementById('groupWelcomeMsg').value,
                 groupExitEnabled: document.getElementById('groupExitEnabled').checked,
-                groupExitMsg: document.getElementById('groupExitMsg').value
+                groupExitMsg: document.getElementById('groupExitMsg').value,
+                memoryEnabled: document.getElementById('memoryEnabled').checked,
+                analysisEnabled: document.getElementById('analysisEnabled').checked,
+                analysisInstructions: document.getElementById('analysisInstructions').value
             };
             await fetch('/api/bot/' + currentBotId + '/config', {
                 method: 'POST',
@@ -835,8 +942,9 @@ app.get('/', (req, res) => {
 });
 
 // Client Management Page
-app.get('/manage/:id', (req, res) => {
-    const bot = db.prepare('SELECT name FROM bots WHERE id = ?').get(req.params.id) as any;
+app.get('/manage/:id', async (req, res) => {
+    const botDoc = await firestoreDb.collection('bots').doc(req.params.id).get();
+    const bot = botDoc.data();
     if (!bot) return res.status(404).send("Bot não encontrado");
 
     res.send(`
@@ -877,6 +985,23 @@ app.get('/manage/:id', (req, res) => {
                     <div>
                         <label class="block text-xs uppercase mb-1">Base de Conhecimento</label>
                         <textarea id="knowledge" rows="4" class="w-full hacker-input p-2 rounded text-sm"></textarea>
+                    </div>
+
+                    <div class="hacker-border p-4 rounded bg-black/50 space-y-4">
+                        <h3 class="text-xs underline uppercase">Recursos Avançados</h3>
+                        <div class="flex items-center justify-between">
+                            <label class="text-[10px] uppercase">Memória de Contexto</label>
+                            <input id="memoryEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                        </div>
+                        
+                        <div class="border-t border-gray-800 pt-2">
+                            <div class="flex items-center justify-between mb-2">
+                                <label class="text-[10px] uppercase">Análise de Mídia (Imagem/PDF)</label>
+                                <input id="analysisEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                            </div>
+                            <label class="block text-[8px] uppercase mb-1">Instruções de Análise</label>
+                            <textarea id="analysisInstructions" rows="2" class="w-full hacker-input p-2 rounded text-[10px]" placeholder="O que o bot deve procurar..."></textarea>
+                        </div>
                     </div>
 
                     <div class="hacker-border p-4 rounded bg-black/50 space-y-4">
@@ -928,6 +1053,10 @@ app.get('/manage/:id', (req, res) => {
                 document.getElementById('groupWelcomeMsg').value = data.groupWelcomeMsg || "";
                 document.getElementById('groupExitEnabled').checked = data.groupExitEnabled === 1;
                 document.getElementById('groupExitMsg').value = data.groupExitMsg || "";
+                
+                document.getElementById('memoryEnabled').checked = data.memoryEnabled === 1;
+                document.getElementById('analysisEnabled').checked = data.analysisEnabled === 1;
+                document.getElementById('analysisInstructions').value = data.analysisInstructions || "";
             }
         }
 
@@ -942,7 +1071,10 @@ app.get('/manage/:id', (req, res) => {
                 groupWelcomeEnabled: document.getElementById('groupWelcomeEnabled').checked,
                 groupWelcomeMsg: document.getElementById('groupWelcomeMsg').value,
                 groupExitEnabled: document.getElementById('groupExitEnabled').checked,
-                groupExitMsg: document.getElementById('groupExitMsg').value
+                groupExitMsg: document.getElementById('groupExitMsg').value,
+                memoryEnabled: document.getElementById('memoryEnabled').checked,
+                analysisEnabled: document.getElementById('analysisEnabled').checked,
+                analysisInstructions: document.getElementById('analysisInstructions').value
             };
             
             await fetch('/api/bot/' + botId + '/config', {

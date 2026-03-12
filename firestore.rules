@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: bots
+    // Document ID: botId
+    // Fields:
+    //   - id: string (required)
+    //   - name: string (required)
+    //   - systemPrompt: string
+    //   - welcomeMsg: string
+    //   - exitMsg: string
+    //   - knowledgeBase: string
+    //   - geminiKeys: string
+    //   - active: bool
+    //   - createdAt: timestamp
+    //   - groupWelcomeEnabled: bool
+    //   - groupWelcomeMsg: string
+    //   - groupExitEnabled: bool
+    //   - groupExitMsg: string
+    //   - respondInGroups: bool
+    //   - respondInPrivate: bool
+    //   - privateWelcomeEnabled: bool
+    //   - privateExitEnabled: bool
+    //   - memoryEnabled: bool
+    //   - analysisEnabled: bool
+    //   - analysisInstructions: string
+    //
+    // Subcollection: bots/{botId}/history
+    // Document ID: historyId
+    // Fields:
+    //   - botId: string
+    //   - jid: string
+    //   - role: string (user/model)
+    //   - text: string
+    //   - timestamp: timestamp
+    //
+    // ===============================================================
+
+    // Helper Functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (request.auth.token.email == "mendeshenrique158@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    // Validation Functions
+    function isValidBot(data) {
+      return data.keys().hasAll(['id', 'name']) &&
+             data.id is string && data.name is string && data.name.size() < 100;
+    }
+
+    function isValidHistory(data) {
+      return data.keys().hasAll(['botId', 'jid', 'role', 'text', 'timestamp']) &&
+             data.botId is string && data.jid is string &&
+             data.role in ['user', 'model'] && data.text is string &&
+             data.timestamp is timestamp;
+    }
+
+    // Rules
+    match /bots/{botId} {
+      allow read, write: if isAdmin();
+      
+      match /history/{historyId} {
+        allow read, write: if isAdmin();
+      }
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

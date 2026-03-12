@@ -1,0 +1,55 @@
+{
+  "entities": {
+    "Bot": {
+      "title": "Bot",
+      "description": "Configuration for a WhatsApp bot",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "systemPrompt": { "type": "string" },
+        "welcomeMsg": { "type": "string" },
+        "exitMsg": { "type": "string" },
+        "knowledgeBase": { "type": "string" },
+        "geminiKeys": { "type": "string" },
+        "active": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "groupWelcomeEnabled": { "type": "boolean" },
+        "groupWelcomeMsg": { "type": "string" },
+        "groupExitEnabled": { "type": "boolean" },
+        "groupExitMsg": { "type": "string" },
+        "respondInGroups": { "type": "boolean" },
+        "respondInPrivate": { "type": "boolean" },
+        "privateWelcomeEnabled": { "type": "boolean" },
+        "privateExitEnabled": { "type": "boolean" },
+        "memoryEnabled": { "type": "boolean" },
+        "analysisEnabled": { "type": "boolean" },
+        "analysisInstructions": { "type": "string" }
+      },
+      "required": ["id", "name"]
+    },
+    "History": {
+      "title": "History",
+      "description": "Chat history for a bot and user",
+      "type": "object",
+      "properties": {
+        "botId": { "type": "string" },
+        "jid": { "type": "string" },
+        "role": { "type": "string", "enum": ["user", "model"] },
+        "text": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["botId", "jid", "role", "text", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/bots/{botId}": {
+      "schema": "Bot",
+      "description": "Collection of bots"
+    },
+    "/bots/{botId}/history/{historyId}": {
+      "schema": "History",
+      "description": "Chat history for a specific bot"
+    }
+  }
+}
