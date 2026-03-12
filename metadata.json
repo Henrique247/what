@@ -1,5 +1,5 @@
 {
-  "name": "TechStar WhatsApp Bot",
-  "description": "Painel de controle e bot de WhatsApp inteligente para a TechStar Industries com histórico de chat e análise de IA.",
+  "name": "TechStar SaaS Multi-Bot",
+  "description": "Plataforma SaaS para criação e gerenciamento de múltiplos bots de WhatsApp inteligentes com Gemini AI.",
   "requestFramePermissions": []
 }

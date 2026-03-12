@@ -16,139 +16,492 @@ app.use(express.json());
 // Database Setup
 const db = new Database('bot_data.db');
 db.exec(`
+    CREATE TABLE IF NOT EXISTS bots (
+        id TEXT PRIMARY KEY,
+        name TEXT,
+        systemPrompt TEXT,
+        welcomeMsg TEXT,
+        exitMsg TEXT,
+        knowledgeBase TEXT,
+        geminiKeys TEXT,
+        active INTEGER DEFAULT 1,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP,
+        groupWelcomeEnabled INTEGER DEFAULT 0,
+        groupWelcomeMsg TEXT,
+        groupExitEnabled INTEGER DEFAULT 0,
+        groupExitMsg TEXT,
+        respondInGroups INTEGER DEFAULT 1,
+        respondInPrivate INTEGER DEFAULT 1,
+        privateWelcomeEnabled INTEGER DEFAULT 0,
+        privateExitEnabled INTEGER DEFAULT 0
+    );
+
     CREATE TABLE IF NOT EXISTS history (
+        botId TEXT,
         jid TEXT,
         role TEXT,
         text TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
+    );
 `);
 
-function saveMessage(jid: string, role: 'user' | 'model', text: string) {
-    const stmt = db.prepare('INSERT INTO history (jid, role, text) VALUES (?, ?, ?)');
-    stmt.run(jid, role, text);
-    
-    // Keep only last 20 messages per conversation to save tokens and memory
-    db.prepare(`
-        DELETE FROM history 
-        WHERE jid = ? AND timestamp NOT IN (
-            SELECT timestamp FROM history WHERE jid = ? ORDER BY timestamp DESC LIMIT 20
-        )
-    `).run(jid, jid);
+// Migration: Add botId to history if it doesn't exist
+try {
+    db.prepare('SELECT botId FROM history LIMIT 1').get();
+} catch (e) {
+    console.log("Migrando tabela history para incluir botId...");
+    db.exec('ALTER TABLE history ADD COLUMN botId TEXT');
 }
 
-function getHistory(jid: string) {
-    const rows = db.prepare('SELECT role, text FROM history WHERE jid = ? ORDER BY timestamp ASC').all(jid);
+// Migration: Add group features to bots if they don't exist
+try {
+    db.prepare('SELECT groupWelcomeEnabled FROM bots LIMIT 1').get();
+} catch (e) {
+    console.log("Migrando tabela bots para incluir recursos de grupo...");
+    db.exec('ALTER TABLE bots ADD COLUMN groupWelcomeEnabled INTEGER DEFAULT 0');
+    db.exec('ALTER TABLE bots ADD COLUMN groupWelcomeMsg TEXT');
+    db.exec('ALTER TABLE bots ADD COLUMN groupExitEnabled INTEGER DEFAULT 0');
+    db.exec('ALTER TABLE bots ADD COLUMN groupExitMsg TEXT');
+}
+
+// Migration: Add more granular controls
+try {
+    db.prepare('SELECT respondInGroups FROM bots LIMIT 1').get();
+} catch (e) {
+    console.log("Migrando tabela bots para incluir controles granulares...");
+    db.exec('ALTER TABLE bots ADD COLUMN respondInGroups INTEGER DEFAULT 1');
+    db.exec('ALTER TABLE bots ADD COLUMN respondInPrivate INTEGER DEFAULT 1');
+    db.exec('ALTER TABLE bots ADD COLUMN privateWelcomeEnabled INTEGER DEFAULT 0');
+    db.exec('ALTER TABLE bots ADD COLUMN privateExitEnabled INTEGER DEFAULT 0');
+}
+
+function saveMessage(botId: string, jid: string, role: 'user' | 'model', text: string) {
+    const stmt = db.prepare('INSERT INTO history (botId, jid, role, text) VALUES (?, ?, ?, ?)');
+    stmt.run(botId, jid, role, text);
+    
+    db.prepare(`
+        DELETE FROM history 
+        WHERE botId = ? AND jid = ? AND timestamp NOT IN (
+            SELECT timestamp FROM history WHERE botId = ? AND jid = ? ORDER BY timestamp DESC LIMIT 20
+        )
+    `).run(botId, jid, botId, jid);
+}
+
+function getHistory(botId: string, jid: string) {
+    const rows = db.prepare('SELECT role, text FROM history WHERE botId = ? AND jid = ? ORDER BY timestamp ASC').all(botId, jid);
     return rows.map((r: any) => ({
         role: r.role,
         parts: [{ text: r.text }]
     }));
 }
 
-// Path to config
-const CONFIG_PATH = path.join(process.cwd(), 'config.json');
+// Multi-Bot Management
+const activeSocks = new Map<string, any>();
+const qrCodes = new Map<string, string>();
+const connectionStatuses = new Map<string, string>();
 
-// Initial config load
-let config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-
-let sock: any;
-let qrCodeData = "";
-let connectionStatus = "Desconectado";
-
-// Gemini Setup
-let genAIs: any[] = [];
-let currentKeyIndex = 0;
-
-function updateGemini() {
-    const keys = Array.isArray(config.geminiKeys) 
-        ? config.geminiKeys 
-        : (config.geminiKey ? [config.geminiKey] : []);
-    
-    genAIs = keys.map((k: string) => {
+function getGenAIInstances(keysStr: string) {
+    const keys = keysStr.split(',').map(k => k.trim()).filter(k => k !== "");
+    return keys.map((k: string) => {
         const cleanKey = k.trim().replace(/["']/g, '');
         return cleanKey ? new GoogleGenAI({ apiKey: cleanKey }) : null;
     }).filter(ai => ai !== null);
+}
 
-    currentKeyIndex = 0;
+const currentKeyIndexes = new Map<string, number>();
 
-    if (genAIs.length > 0) {
-        console.log(`SUCESSO: ${genAIs.length} chaves Gemini configuradas.`);
-    } else {
-        console.warn("AVISO: Nenhuma chave Gemini configurada!");
+const startingBots = new Set<string>();
+
+async function startBot(botId: string) {
+    if (startingBots.has(botId)) {
+        console.log(`[Bot ${botId}] Já está iniciando, ignorando nova chamada.`);
+        return;
+    }
+    startingBots.add(botId);
+    console.log(`[Bot ${botId}] Iniciando bot...`);
+
+    try {
+        const bot = db.prepare('SELECT * FROM bots WHERE id = ?').get(botId) as any;
+        if (!bot || !bot.active) {
+            console.log(`[Bot ${botId}] Bot inativo ou não encontrado.`);
+            startingBots.delete(botId);
+            return;
+        }
+
+        if (activeSocks.has(botId)) {
+            console.log(`[Bot ${botId}] Fechando conexão anterior...`);
+            try { 
+                const oldSock = activeSocks.get(botId);
+                oldSock.ev.removeAllListeners('connection.update');
+                oldSock.end(undefined); 
+            } catch(e) {}
+            activeSocks.delete(botId);
+        }
+
+        const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
+        if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
+
+        console.log(`[Bot ${botId}] Carregando estado de autenticação...`);
+        const { state, saveCreds } = await useMultiFileAuthState(authPath);
+        
+        console.log(`[Bot ${botId}] Buscando versão do Baileys...`);
+        const { version } = await fetchLatestBaileysVersion();
+
+        console.log(`[Bot ${botId}] Criando socket...`);
+        const sock = makeWASocket({
+            version,
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+            auth: state,
+            browser: [bot.name || "TechStar Bot", "Chrome", "1.0.0"],
+            syncFullHistory: false,
+            markOnlineOnConnect: false,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 0,
+            keepAliveIntervalMs: 10000,
+            generateHighQualityLinkPreview: false,
+        });
+
+        activeSocks.set(botId, sock);
+        connectionStatuses.set(botId, "Conectando...");
+
+        sock.ev.on('creds.update', saveCreds);
+
+        sock.ev.on('connection.update', (update: any) => {
+            const { connection, lastDisconnect, qr } = update;
+            
+            if (qr) {
+                console.log(`[Bot ${botId}] QR Code recebido do Baileys. Convertendo para DataURL...`);
+                qrcode.toDataURL(qr, (err, url) => {
+                    if (err) {
+                        console.error(`[Bot ${botId}] Erro ao converter QR para DataURL:`, err);
+                    } else {
+                        console.log(`[Bot ${botId}] QR Code convertido para DataURL com sucesso. Tamanho: ${url.length}`);
+                        qrCodes.set(botId, url || "");
+                    }
+                });
+            }
+
+        if (connection === 'close') {
+            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+            console.log(`[Bot ${botId}] Conexão fechada. Código: ${statusCode}`);
+            
+            connectionStatuses.set(botId, "Desconectado");
+            qrCodes.delete(botId);
+            
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+            
+            // Re-check if bot is still active in DB before reconnecting
+            const bot = db.prepare('SELECT active FROM bots WHERE id = ?').get(botId) as any;
+            if (!bot || !bot.active) {
+                console.log(`[Bot ${botId}] Bot desativado no banco, não irá reconectar.`);
+                activeSocks.delete(botId);
+                startingBots.delete(botId);
+                return;
+            }
+
+            if (statusCode === DisconnectReason.restartRequired) {
+                console.log(`[Bot ${botId}] Reinício necessário. Reiniciando agora...`);
+                startingBots.delete(botId);
+                startBot(botId);
+            } else if (shouldReconnect) {
+                const delay = 5000;
+                console.log(`[Bot ${botId}] Tentando reconectar em ${delay/1000}s...`);
+                setTimeout(() => {
+                    startingBots.delete(botId);
+                    startBot(botId);
+                }, delay);
+            } else {
+                console.log(`[Bot ${botId}] Deslogado. Não irá reconectar automaticamente.`);
+                activeSocks.delete(botId);
+                startingBots.delete(botId);
+            }
+        } else if (connection === 'open') {
+            console.log(`[Bot ${botId}] Conexão estabelecida com sucesso!`);
+            connectionStatuses.set(botId, "Conectado");
+            qrCodes.delete(botId);
+            startingBots.delete(botId);
+        }
+    });
+
+    sock.ev.on('group-participants.update', async (anu: any) => {
+        console.log(`[Bot ${botId}] Evento group-participants.update recebido:`, anu.action, anu.id);
+        const currentBot = db.prepare('SELECT * FROM bots WHERE id = ?').get(botId) as any;
+        if (!currentBot || !currentBot.active) {
+            console.log(`[Bot ${botId}] Bot inativo ou não encontrado, ignorando evento de grupo.`);
+            return;
+        }
+
+        const { id, participants, action } = anu;
+        
+        if (action === 'add' && currentBot.groupWelcomeEnabled) {
+            console.log(`[Bot ${botId}] Processando entrada de participantes no grupo ${id}. Total: ${participants.length}`);
+            for (const participant of participants) {
+                const jid = typeof participant === 'string' ? participant : (participant.jid || participant.id);
+                if (!jid || typeof jid !== 'string') {
+                    console.log(`[Bot ${botId}] JID de participante inválido:`, participant);
+                    continue;
+                }
+
+                const mentionText = `@${jid.split('@')[0]}`;
+                const msg = currentBot.groupWelcomeMsg || `Bem-vindo ao grupo ${mentionText}!`;
+                
+                // Se a mensagem não contém a menção, adicionamos no final para garantir que o usuário seja notificado
+                const finalMsg = msg.includes(mentionText) ? msg : `${msg}\n\n${mentionText}`;
+
+                console.log(`[Bot ${botId}] Enviando boas-vindas para ${jid} no grupo ${id}`);
+                try {
+                    await sock.sendMessage(id, { 
+                        text: finalMsg, 
+                        mentions: [jid] 
+                    });
+                } catch (err) {
+                    console.error(`[Bot ${botId}] Erro ao enviar boas-vindas:`, err);
+                }
+            }
+        } else if (action === 'remove' && currentBot.groupExitEnabled) {
+            console.log(`[Bot ${botId}] Processando saída de participantes no grupo ${id}. Total: ${participants.length}`);
+            for (const participant of participants) {
+                const jid = typeof participant === 'string' ? participant : (participant.jid || participant.id);
+                if (!jid || typeof jid !== 'string') {
+                    console.error(`[Bot ${botId}] JID inválido ao tentar enviar mensagem de saída:`, participant);
+                    continue;
+                }
+                
+                const msg = currentBot.groupExitMsg || "Olá, notamos que você saiu do grupo. Algum motivo especial? Gostaríamos de saber seu feedback!";
+                console.log(`[Bot ${botId}] Enviando mensagem de saída privada para ${jid}`);
+                try {
+                    await sock.sendMessage(jid, { text: msg });
+                } catch (err) {
+                    console.error(`[Bot ${botId}] Erro ao enviar mensagem privada para ${jid}:`, err);
+                }
+            }
+        }
+    });
+
+    sock.ev.on('messages.upsert', async (m: any) => {
+        const msg = m.messages[0];
+        if (!msg.message || msg.key.fromMe) return;
+
+        const jid = msg.key.remoteJid;
+        const isGroup = jid.endsWith('@g.us');
+        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+        if (!text) return;
+
+        // Reload bot config for each message to ensure latest settings
+        const currentBot = db.prepare('SELECT * FROM bots WHERE id = ?').get(botId) as any;
+        if (!currentBot || !currentBot.active) return;
+
+        // Check if bot should respond in this context
+        if (isGroup && !currentBot.respondInGroups) return;
+        if (!isGroup && !currentBot.respondInPrivate) return;
+
+        // Handle private exit command
+        if (!isGroup && text.toLowerCase() === '!sair' && currentBot.privateExitEnabled) {
+            await sock.sendMessage(jid, { text: currentBot.exitMsg || "Até logo!" });
+            return;
+        }
+
+        const genAIs = getGenAIInstances(currentBot.geminiKeys || "");
+        if (genAIs.length === 0) return;
+
+        try {
+            const history = getHistory(botId, jid);
+            
+            // Handle private welcome message (first contact)
+            if (!isGroup && history.length === 0 && currentBot.privateWelcomeEnabled) {
+                await sock.sendMessage(jid, { text: currentBot.welcomeMsg || "Olá! Como posso ajudar?" });
+                // Don't return, let Gemini process the first message too
+            }
+
+            saveMessage(botId, jid, 'user', text);
+
+            const fullSystemPrompt = `${currentBot.systemPrompt}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
+            
+            // Retry logic with rotation
+            let attempts = 0;
+            const maxAttempts = genAIs.length * 2;
+            let response;
+            let keyIndex = currentKeyIndexes.get(botId) || 0;
+
+            while (attempts < maxAttempts) {
+                try {
+                    const currentAI = genAIs[keyIndex % genAIs.length];
+                    response = await currentAI.models.generateContent({
+                        model: "gemini-3-flash-preview",
+                        contents: [...history, { role: 'user', parts: [{ text }] }],
+                        config: { systemInstruction: fullSystemPrompt }
+                    });
+                    currentKeyIndexes.set(botId, keyIndex % genAIs.length);
+                    break;
+                } catch (err: any) {
+                    attempts++;
+                    const is429 = err.message?.includes("429") || err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
+                    if (is429) {
+                        keyIndex++;
+                        continue;
+                    }
+                    throw err;
+                }
+            }
+
+            const responseText = response?.text;
+            if (responseText) {
+                saveMessage(botId, jid, 'model', responseText);
+                await sock.sendMessage(jid, { text: responseText });
+            }
+        } catch (e) {
+            console.error(`Erro no Bot ${botId}:`, e);
+        }
+    });
+    } catch (e) {
+        console.error(`[Bot ${botId}] Erro fatal ao iniciar:`, e);
+        startingBots.delete(botId);
     }
 }
 
-updateGemini();
-
-// Rota para atualizar a "personalidade" do bot via Front
-app.post('/api/update-config', (req, res) => {
-    config = { ...config, ...req.body };
-    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
-    updateGemini();
-    res.send({ status: "Configuração da TechStar Atualizada!" });
+// API Routes for Multi-Bot
+app.get('/api/admin/bots', (req, res) => {
+    const bots = db.prepare('SELECT * FROM bots ORDER BY createdAt DESC').all();
+    res.send(bots.map((b: any) => ({
+        ...b,
+        status: connectionStatuses.get(b.id) || "Desconectado",
+        hasQR: !!qrCodes.get(b.id)
+    })));
 });
 
-// Endpoint para o Front pegar o QR Code
-app.get('/api/get-qr', (req, res) => {
-    if (qrCodeData) res.send({ qr: qrCodeData });
-    else res.send({ message: "Aguardando geração do QR..." });
+app.post('/api/admin/bots', (req, res) => {
+    const { name } = req.body;
+    const id = Math.random().toString(36).substring(2, 10);
+    db.prepare('INSERT INTO bots (id, name, systemPrompt, welcomeMsg, exitMsg, geminiKeys) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(id, name, "Você é um assistente útil.", "Olá!", "Até logo!", "");
+    
+    console.log(`[Admin] Criando e iniciando bot: ${name} (${id})`);
+    startBot(id);
+    
+    res.send({ id, status: "Bot criado e iniciando..." });
 });
 
-// Endpoint para o status
-app.get('/api/status', (req, res) => {
-    const keysCount = genAIs.length;
-    res.send({ 
-        status: connectionStatus,
-        geminiKey: keysCount > 0 ? `${keysCount} Chave(s) Ativa(s)` : "NENHUMA ENCONTRADA"
+app.post('/api/admin/bots/:id/toggle', (req, res) => {
+    const bot = db.prepare('SELECT active FROM bots WHERE id = ?').get(req.params.id) as any;
+    const newState = bot.active ? 0 : 1;
+    db.prepare('UPDATE bots SET active = ? WHERE id = ?').run(newState, req.params.id);
+    
+    if (newState) startBot(req.params.id);
+    else {
+        if (activeSocks.has(req.params.id)) {
+            try {
+                const sock = activeSocks.get(req.params.id);
+                sock.ev.removeAllListeners('connection.update');
+                sock.end(undefined);
+            } catch(e) {}
+            activeSocks.delete(req.params.id);
+        }
+        connectionStatuses.set(req.params.id, "Desativado");
+        qrCodes.delete(req.params.id);
+    }
+    res.send({ status: newState ? "Bot ativado" : "Bot desativado" });
+});
+
+app.get('/api/bot/:id/config', (req, res) => {
+    const bot = db.prepare('SELECT * FROM bots WHERE id = ?').get(req.params.id);
+    if (!bot) return res.status(404).send({ error: "Bot não encontrado" });
+    res.send({
+        ...bot,
+        status: connectionStatuses.get(req.params.id) || "Desconectado",
+        qr: qrCodes.get(req.params.id) || null
     });
 });
 
-// Endpoint para pegar a config atual
-app.get('/api/config', (req, res) => {
-    res.send(config);
+app.post('/api/bot/:id/config', (req, res) => {
+    const { 
+        name, systemPrompt, welcomeMsg, exitMsg, knowledgeBase, geminiKeys,
+        groupWelcomeEnabled, groupWelcomeMsg, groupExitEnabled, groupExitMsg,
+        respondInGroups, respondInPrivate, privateWelcomeEnabled, privateExitEnabled
+    } = req.body;
+    db.prepare(`
+        UPDATE bots 
+        SET name = ?, systemPrompt = ?, welcomeMsg = ?, exitMsg = ?, knowledgeBase = ?, geminiKeys = ?,
+            groupWelcomeEnabled = ?, groupWelcomeMsg = ?, groupExitEnabled = ?, groupExitMsg = ?,
+            respondInGroups = ?, respondInPrivate = ?, privateWelcomeEnabled = ?, privateExitEnabled = ?
+        WHERE id = ?
+    `).run(
+        name, systemPrompt, welcomeMsg, exitMsg, knowledgeBase, geminiKeys,
+        groupWelcomeEnabled ? 1 : 0, groupWelcomeMsg, groupExitEnabled ? 1 : 0, groupExitMsg,
+        respondInGroups ? 1 : 0, respondInPrivate ? 1 : 0, privateWelcomeEnabled ? 1 : 0, privateExitEnabled ? 1 : 0,
+        req.params.id
+    );
+    res.send({ status: "Configuração salva!" });
 });
 
-// Endpoint para listar chats únicos
-app.get('/api/chats', (req, res) => {
+app.post('/api/bot/:id/reset', async (req, res) => {
+    const botId = req.params.id;
+    console.log(`[Admin] Resetando sessão do bot: ${botId}`);
+    
+    // Stop bot if running
+    if (activeSocks.has(botId)) {
+        try { activeSocks.get(botId).logout(); } catch(e) {}
+        activeSocks.delete(botId);
+    }
+    
+    // Delete auth folder
+    const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
+    if (fs.existsSync(authPath)) {
+        fs.rmSync(authPath, { recursive: true, force: true });
+    }
+    
+    // Restart bot
+    startingBots.delete(botId);
+    qrCodes.delete(botId);
+    connectionStatuses.set(botId, "Reiniciando...");
+    startBot(botId);
+    res.send({ status: "Sessão resetada e bot reiniciado!" });
+});
+
+app.delete('/api/admin/bots/:id', async (req, res) => {
+    const botId = req.params.id;
     try {
-        const rows = db.prepare('SELECT jid, MAX(timestamp) as last_msg FROM history GROUP BY jid ORDER BY last_msg DESC').all();
-        res.send(rows);
-    } catch (e) {
-        res.status(500).send({ error: "Erro ao buscar chats" });
+        console.log(`[Admin] Apagando bot: ${botId}`);
+
+        // Stop bot if running
+        if (activeSocks.has(botId)) {
+            try {
+                const sock = activeSocks.get(botId);
+                sock.ev.removeAllListeners('connection.update');
+                sock.end(undefined);
+            } catch(e) {}
+            activeSocks.delete(botId);
+        }
+
+        // Clean up state
+        startingBots.delete(botId);
+        qrCodes.delete(botId);
+        connectionStatuses.delete(botId);
+
+        // Delete auth folder
+        const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
+        if (fs.existsSync(authPath)) {
+            try {
+                fs.rmSync(authPath, { recursive: true, force: true });
+            } catch (e) {
+                console.error(`[Admin] Erro ao deletar pasta de auth do bot ${botId}:`, e);
+            }
+        }
+
+        // Delete from DB
+        db.prepare('DELETE FROM bots WHERE id = ?').run(botId);
+        db.prepare('DELETE FROM history WHERE botId = ?').run(botId);
+
+        res.send({ status: "Bot apagado com sucesso!" });
+    } catch (error) {
+        console.error(`[Admin] Erro ao apagar bot ${botId}:`, error);
+        res.status(500).send({ error: "Erro ao apagar bot" });
     }
 });
 
-// Endpoint para pegar mensagens de um chat específico
-app.get('/api/chat/:jid', (req, res) => {
-    try {
-        const rows = db.prepare('SELECT role, text, timestamp FROM history WHERE jid = ? ORDER BY timestamp ASC').all(req.params.jid);
-        res.send(rows);
-    } catch (e) {
-        res.status(500).send({ error: "Erro ao buscar histórico" });
-    }
-});
-
-// Endpoint para análise de IA sobre os chats
-app.get('/api/analyze-chats', async (req, res) => {
-    try {
-        if (genAIs.length === 0) return res.status(400).send({ error: "Sem chaves Gemini" });
-        
-        const recentMessages = db.prepare('SELECT jid, role, text FROM history ORDER BY timestamp DESC LIMIT 100').all();
-        if (recentMessages.length === 0) return res.send({ summary: "Nenhuma conversa registrada ainda." });
-
-        const prompt = `Analise as seguintes conversas recentes do bot de WhatsApp da TechStar e forneça um resumo executivo dos principais tópicos, sentimentos dos clientes e possíveis melhorias ou oportunidades de negócio. Seja direto e profissional.\n\nCONVERSAS:\n${JSON.stringify(recentMessages)}`;
-
-        const currentAI = genAIs[0];
-        const result = await currentAI.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        });
-
-        res.send({ summary: result.text });
-    } catch (e: any) {
-        res.status(500).send({ error: e.message });
-    }
-});
+// Initialize existing active bots
+const allBots = db.prepare('SELECT id FROM bots WHERE active = 1').all() as any[];
+allBots.forEach(b => startBot(b.id));
 
 // Rota de Health Check
 app.get('/health', (req, res) => res.send("TechStar Bot is Alive 24h"));
@@ -161,7 +514,7 @@ app.get('/', (req, res) => {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TechStar Admin Panel</title>
+    <title>TechStar Multi-Bot Admin</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
     <style>
@@ -174,243 +527,434 @@ app.get('/', (req, res) => {
     </style>
 </head>
 <body class="hacker-bg text-gray-300 min-h-screen p-4 md:p-8">
-    <div class="max-w-4xl mx-auto">
+    <div class="max-w-6xl mx-auto">
         <header class="mb-8 flex justify-between items-center border-b border-gray-800 pb-4">
             <div>
-                <h1 class="text-3xl font-bold hacker-text">TECHSTAR_BOT_v1.0</h1>
-                <p id="gemini-status" class="text-[10px] text-gray-500 mt-1 uppercase tracking-widest">IA_KEY: Verificando...</p>
+                <h1 class="text-3xl font-bold hacker-text">TECHSTAR_SAAS_v2.0</h1>
+                <p class="text-[10px] text-gray-500 mt-1 uppercase tracking-widest">Painel de Controle Multi-Instância</p>
             </div>
-            <div id="status-badge" class="px-4 py-1 rounded-full border border-red-500 text-red-500 text-sm uppercase tracking-widest">
-                Status: Desconectado
-            </div>
+            <button onclick="openCreateModal()" class="bg-green-900 hover:bg-green-700 text-white px-4 py-2 rounded border border-green-400 text-sm">
+                + NOVO_BOT
+            </button>
         </header>
 
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <!-- QR Code Section -->
-            <section class="hacker-border p-6 rounded-lg bg-black">
-                <h2 class="text-xl mb-4 hacker-text underline">AUTENTICAÇÃO_WHATSAPP</h2>
-                <div id="qr-container" class="flex flex-col items-center justify-center min-h-[250px] border border-dashed border-gray-700 rounded">
-                    <p id="qr-placeholder" class="text-gray-500 text-center px-4">Aguardando sinal do servidor...</p>
-                    <img id="qr-image" class="hidden w-64 h-64 bg-white p-2 rounded" src="" alt="QR Code">
-                </div>
-                <p class="mt-4 text-xs text-gray-500 italic">Escaneie o código acima para vincular o bot.</p>
-            </section>
-
-            <!-- Config Section -->
-            <section class="hacker-border p-6 rounded-lg bg-black">
-                <h2 class="text-xl mb-4 hacker-text underline">CONFIGURAÇÃO_COMPORTAMENTO</h2>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">System Prompt (IA)</label>
-                        <textarea id="systemPrompt" rows="3" class="w-full hacker-input p-2 rounded text-sm"></textarea>
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Base de Conhecimento (Treinamento)</label>
-                        <textarea id="knowledgeBase" rows="5" class="w-full hacker-input p-2 rounded text-sm" placeholder="Insira aqui informações sobre a TechStar, produtos, preços, etc..."></textarea>
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Gemini API Keys (Separe por vírgula para rotação)</label>
-                        <textarea id="geminiKeys" rows="2" class="w-full hacker-input p-2 rounded text-sm" placeholder="Chave 1, Chave 2, Chave 3..."></textarea>
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Mensagem de Boas-vindas</label>
-                        <input id="welcomeMsg" type="text" class="w-full hacker-input p-2 rounded text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Mensagem de Saída</label>
-                        <input id="exitMsg" type="text" class="w-full hacker-input p-2 rounded text-sm">
-                    </div>
-                    <button onclick="saveConfig()" class="w-full bg-green-900 hover:bg-green-700 text-white font-bold py-2 rounded transition-all border border-green-400">
-                        SALVAR_ALTERAÇÕES
-                    </button>
-                </div>
-            </section>
-        </div>
-
-        <!-- Analytics & History Section -->
-        <div class="mt-8 grid grid-cols-1 md:grid-cols-3 gap-8">
-            <!-- Chat List -->
-            <section class="hacker-border p-6 rounded-lg bg-black md:col-span-1">
-                <h2 class="text-xl mb-4 hacker-text underline">CONVERSAS_RECENTES</h2>
-                <div id="chat-list" class="space-y-2 max-h-[400px] overflow-y-auto pr-2">
-                    <p class="text-gray-500 text-xs text-center">Nenhum chat encontrado.</p>
-                </div>
-            </section>
-
-            <!-- Chat Viewer -->
-            <section class="hacker-border p-6 rounded-lg bg-black md:col-span-2">
-                <h2 class="text-xl mb-4 hacker-text underline">VISUALIZADOR_DE_CHAT</h2>
-                <div id="chat-viewer" class="h-[350px] overflow-y-auto border border-gray-800 p-4 rounded bg-[#050505] space-y-4 mb-4">
-                    <p class="text-gray-500 text-center mt-20">Selecione uma conversa ao lado.</p>
-                </div>
-                <div id="ai-analysis-container" class="hidden p-4 border border-blue-900 bg-blue-900/10 rounded">
-                    <h3 class="text-blue-400 text-xs font-bold uppercase mb-2">Insights da IA (Gemini)</h3>
-                    <div id="ai-summary" class="text-sm text-blue-200 italic"></div>
-                </div>
-                <button onclick="analyzeChats()" class="mt-4 w-full bg-blue-900 hover:bg-blue-700 text-white font-bold py-2 rounded transition-all border border-blue-400">
-                    GERAR_INSIGHTS_IA
-                </button>
-            </section>
+        <div id="bots-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <!-- Bots will be listed here -->
         </div>
 
         <footer class="mt-12 text-center text-gray-600 text-xs">
-            &copy; 2024 TECHSTAR INDUSTRIES - ALL RIGHTS RESERVED
+            &copy; 2024 TECHSTAR INDUSTRIES - MULTI-BOT SYSTEM
         </footer>
     </div>
 
+    <!-- Create Bot Modal -->
+    <div id="create-modal" class="fixed inset-0 bg-black/90 hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-[#0a0a0a] border border-green-500 p-6 rounded-lg max-w-md w-full">
+            <h2 class="text-xl hacker-text underline mb-4">CRIAR_NOVO_BOT</h2>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs uppercase mb-1 hacker-text">Nome do Bot</label>
+                    <input id="newBotName" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Ex: Atendimento Tech">
+                </div>
+                <div class="flex gap-4">
+                    <button onclick="confirmCreateBot()" class="flex-1 bg-green-900 hover:bg-green-700 text-white font-bold py-2 rounded border border-green-400">
+                        CRIAR
+                    </button>
+                    <button onclick="closeCreateModal()" class="flex-1 bg-gray-900 hover:bg-gray-800 text-gray-400 py-2 rounded border border-gray-700">
+                        CANCELAR
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bot Config Modal -->
+    <div id="bot-modal" class="fixed inset-0 bg-black/90 hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-[#0a0a0a] border border-green-500 p-6 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center mb-6">
+                <h2 id="modal-title" class="text-xl hacker-text underline">CONFIGURAR_BOT</h2>
+                <button onclick="closeModal()" class="text-red-500 hover:text-red-400">FECHAR [X]</button>
+            </div>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs uppercase mb-1 hacker-text">Nome do Bot</label>
+                        <input id="botName" type="text" class="w-full hacker-input p-2 rounded text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs uppercase mb-1 hacker-text">System Prompt</label>
+                        <textarea id="botPrompt" rows="4" class="w-full hacker-input p-2 rounded text-sm"></textarea>
+                    </div>
+                    <div>
+                        <label class="block text-xs uppercase mb-1 hacker-text">Gemini Keys (Separadas por vírgula)</label>
+                        <textarea id="botKeys" rows="2" class="w-full hacker-input p-2 rounded text-sm"></textarea>
+                    </div>
+                </div>
+                <div class="flex flex-col items-center justify-center border border-dashed border-gray-700 rounded p-4">
+                    <h3 class="text-xs hacker-text mb-4 uppercase">WhatsApp QR Code</h3>
+                    <div id="modal-qr-container" class="w-48 h-48 bg-white flex items-center justify-center rounded">
+                        <p class="text-black text-[10px] text-center p-2">Aguardando...</p>
+                    </div>
+                    <p id="bot-status-text" class="mt-4 text-xs hacker-text uppercase">Status: Desconectado</p>
+                </div>
+            </div>
+
+            <div class="mt-6 space-y-4">
+                <div>
+                    <label class="block text-xs uppercase mb-1 hacker-text">Base de Conhecimento</label>
+                    <textarea id="botKnowledge" rows="4" class="w-full hacker-input p-2 rounded text-sm"></textarea>
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="flex items-center justify-between hacker-border p-2 rounded">
+                        <label class="text-[10px] uppercase hacker-text">Responder em Privado</label>
+                        <input id="respondInPrivate" type="checkbox" class="w-4 h-4 accent-green-500">
+                    </div>
+                    <div class="flex items-center justify-between hacker-border p-2 rounded">
+                        <label class="text-[10px] uppercase hacker-text">Responder em Grupos</label>
+                        <input id="respondInGroups" type="checkbox" class="w-4 h-4 accent-green-500">
+                    </div>
+                </div>
+
+                <div class="hacker-border p-4 rounded-lg bg-black/50 space-y-4">
+                    <h3 class="text-xs hacker-text underline uppercase">Recursos de Privado</h3>
+                    <div class="flex items-center justify-between">
+                        <label class="text-xs uppercase hacker-text">Boas-vindas (Primeiro Contato)</label>
+                        <input id="privateWelcomeEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                    </div>
+                    <input id="botWelcome" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Mensagem de boas-vindas...">
+                    
+                    <div class="flex items-center justify-between mt-4">
+                        <label class="text-xs uppercase hacker-text">Mensagem de Saída (Comando !sair)</label>
+                        <input id="privateExitEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                    </div>
+                    <input id="botExit" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Mensagem de saída...">
+                </div>
+
+                <div class="hacker-border p-4 rounded-lg bg-black/50 space-y-4">
+                    <h3 class="text-xs hacker-text underline uppercase">Recursos de Grupo</h3>
+                    
+                    <div class="flex items-center justify-between">
+                        <label class="text-xs uppercase hacker-text">Boas-vindas em Grupos</label>
+                        <input id="groupWelcomeEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                    </div>
+                    <textarea id="groupWelcomeMsg" rows="2" class="w-full hacker-input p-2 rounded text-xs" placeholder="Mensagem ao entrar no grupo..."></textarea>
+
+                    <div class="flex items-center justify-between mt-4">
+                        <label class="text-xs uppercase hacker-text">Mensagem ao Sair (Privado)</label>
+                        <input id="groupExitEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                    </div>
+                    <textarea id="groupExitMsg" rows="2" class="w-full hacker-input p-2 rounded text-xs" placeholder="Mensagem enviada no privado ao sair..."></textarea>
+                </div>
+
+                <button onclick="saveBotConfig()" class="w-full bg-green-900 hover:bg-green-700 text-white font-bold py-3 rounded border border-green-400">
+                    SALVAR_CONFIGURAÇÕES
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script>
-        async function fetchStatus() {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                const badge = document.getElementById('status-badge');
-                const geminiStatus = document.getElementById('gemini-status');
-                
-                badge.innerText = 'Status: ' + data.status;
-                geminiStatus.innerText = 'IA_KEY: ' + data.geminiKey;
+        let currentBotId = null;
+        let qrInterval = null;
 
-                if (data.geminiKey.includes('NÃO ENCONTRADA')) {
-                    geminiStatus.classList.add('text-red-500');
-                    geminiStatus.classList.remove('text-gray-500');
-                } else {
-                    geminiStatus.classList.add('text-green-500');
-                    geminiStatus.classList.remove('text-gray-500', 'text-red-500');
-                }
-
-                if (data.status === 'Conectado') {
-                    badge.classList.remove('border-red-500', 'text-red-500');
-                    badge.classList.add('border-green-500', 'text-green-500');
-                    document.getElementById('qr-container').innerHTML = '<p class="text-green-500 font-bold">BOT_ONLINE</p>';
-                }
-            } catch (e) {}
+        function openCreateModal() {
+            document.getElementById('create-modal').classList.remove('hidden');
+            document.getElementById('newBotName').focus();
         }
 
-        async function fetchQR() {
-            try {
-                const res = await fetch('/api/get-qr');
-                const data = await res.json();
-                const img = document.getElementById('qr-image');
-                const placeholder = document.getElementById('qr-placeholder');
-                
-                if (data.qr) {
-                    img.src = data.qr;
-                    img.classList.remove('hidden');
-                    placeholder.classList.add('hidden');
-                }
-            } catch (e) {}
+        function closeCreateModal() {
+            document.getElementById('create-modal').classList.add('hidden');
+            document.getElementById('newBotName').value = '';
         }
 
-        async function fetchConfig() {
-            try {
-                const res = await fetch('/api/config');
-                const data = await res.json();
-                document.getElementById('systemPrompt').value = data.systemPrompt;
-                document.getElementById('welcomeMsg').value = data.welcomeMsg;
-                document.getElementById('exitMsg').value = data.exitMsg;
-                
-                const keys = data.geminiKeys ? data.geminiKeys.join(', ') : (data.geminiKey || "");
-                document.getElementById('geminiKeys').value = keys;
-                
-                document.getElementById('knowledgeBase').value = data.knowledgeBase || "";
-            } catch (e) {}
+        async function confirmCreateBot() {
+            const name = document.getElementById('newBotName').value;
+            if (!name) return;
+            await fetch('/api/admin/bots', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            closeCreateModal();
+            fetchBots();
         }
 
-        async function saveConfig() {
-            const keysRaw = document.getElementById('geminiKeys').value;
-            const keysArray = keysRaw.split(',').map(k => k.trim()).filter(k => k !== "");
+        async function fetchBots() {
+            const res = await fetch('/api/admin/bots');
+            const bots = await res.json();
+            const grid = document.getElementById('bots-grid');
+            grid.innerHTML = '';
 
+            bots.forEach(bot => {
+                const card = document.createElement('div');
+                card.className = 'hacker-border p-6 rounded-lg bg-black flex flex-col justify-between';
+                card.innerHTML = \`
+                    <div>
+                        <div class="flex justify-between items-start mb-4">
+                            <h3 class="text-lg font-bold hacker-text truncate">\${bot.name}</h3>
+                            <span class="text-[10px] px-2 py-0.5 rounded border \${bot.active ? 'border-green-500 text-green-500' : 'border-red-500 text-red-500'} uppercase">
+                                \${bot.active ? 'Ativo' : 'Inativo'}
+                            </span>
+                        </div>
+                        <p class="text-xs text-gray-500 mb-4">ID: \${bot.id}</p>
+                        <div class="space-y-1 mb-6">
+                            <p class="text-[10px] uppercase text-gray-400">Status: <span class="\${bot.status === 'Conectado' ? 'text-green-500' : 'text-yellow-500'}">\${bot.status}</span></p>
+                        </div>
+                    </div>
+                    <div class="space-y-2">
+                        <button onclick="openBot('\${bot.id}')" class="w-full bg-gray-900 hover:bg-gray-800 text-xs py-2 rounded border border-gray-700">GERENCIAR</button>
+                        <button onclick="toggleBot('\${bot.id}')" class="w-full \${bot.active ? 'bg-red-900/20 text-red-500 border-red-900' : 'bg-green-900/20 text-green-500 border-green-900'} text-xs py-2 rounded border">
+                            \${bot.active ? 'DESATIVAR' : 'ATIVAR'}
+                        </button>
+                        <button onclick="resetBot('\${bot.id}')" class="w-full bg-orange-900/20 text-orange-500 border-orange-900 text-[10px] py-1 rounded border">RESETAR SESSÃO</button>
+                        <button onclick="copyLink('\${bot.id}')" class="w-full bg-blue-900/20 text-blue-400 border-blue-900 text-xs py-2 rounded border">COPIAR LINK ACESSO</button>
+                        <button onclick="deleteBot('\${bot.id}')" class="w-full bg-red-900/40 text-red-400 border-red-900 text-[10px] py-1 rounded border hover:bg-red-900/60 mt-2">APAGAR BOT</button>
+                    </div>
+                \`;
+                grid.appendChild(card);
+            });
+        }
+
+        async function toggleBot(id) {
+            await fetch('/api/admin/bots/' + id + '/toggle', { method: 'POST' });
+            fetchBots();
+        }
+
+        async function resetBot(id) {
+            if (!confirm("Isso irá desconectar o WhatsApp e gerar um novo QR Code. Continuar?")) return;
+            await fetch('/api/bot/' + id + '/reset', { method: 'POST' });
+            alert("Sessão resetada! Aguarde alguns segundos pelo novo QR Code.");
+            fetchBots();
+        }
+
+        async function deleteBot(id) {
+            if (!confirm("TEM CERTEZA? Isso apagará o bot e todo o histórico permanentemente!")) return;
+            const res = await fetch('/api/admin/bots/' + id, { method: 'DELETE' });
+            if (res.ok) {
+                fetchBots();
+            } else {
+                const data = await res.json();
+                alert("Erro ao apagar bot: " + (data.error || "Erro desconhecido"));
+            }
+        }
+
+        function copyLink(id) {
+            const url = window.location.origin + '/manage/' + id;
+            navigator.clipboard.writeText(url);
+            alert("Link de gerenciamento copiado!");
+        }
+
+        async function openBot(id) {
+            currentBotId = id;
+            const res = await fetch('/api/bot/' + id + '/config');
+            const bot = await res.json();
+
+            document.getElementById('botName').value = bot.name;
+            document.getElementById('botPrompt').value = bot.systemPrompt;
+            document.getElementById('botWelcome').value = bot.welcomeMsg;
+            document.getElementById('botExit').value = bot.exitMsg;
+            document.getElementById('botKnowledge').value = bot.knowledgeBase || "";
+            document.getElementById('botKeys').value = bot.geminiKeys || "";
+            
+            document.getElementById('respondInPrivate').checked = bot.respondInPrivate === 1;
+            document.getElementById('respondInGroups').checked = bot.respondInGroups === 1;
+            document.getElementById('privateWelcomeEnabled').checked = bot.privateWelcomeEnabled === 1;
+            document.getElementById('privateExitEnabled').checked = bot.privateExitEnabled === 1;
+            
+            document.getElementById('groupWelcomeEnabled').checked = bot.groupWelcomeEnabled === 1;
+            document.getElementById('groupWelcomeMsg').value = bot.groupWelcomeMsg || "";
+            document.getElementById('groupExitEnabled').checked = bot.groupExitEnabled === 1;
+            document.getElementById('groupExitMsg').value = bot.groupExitMsg || "";
+            
+            document.getElementById('bot-modal').classList.remove('hidden');
+            
+            if (qrInterval) clearInterval(qrInterval);
+            qrInterval = setInterval(updateQR, 3000);
+            updateQR();
+        }
+
+        async function updateQR() {
+            if (!currentBotId) return;
+            const res = await fetch('/api/bot/' + currentBotId + '/config');
+            const bot = await res.json();
+            
+            const container = document.getElementById('modal-qr-container');
+            const statusText = document.getElementById('bot-status-text');
+            
+            statusText.innerText = 'Status: ' + bot.status;
+            
+            if (bot.status === 'Conectado') {
+                container.innerHTML = '<p class="text-green-600 font-bold text-center">BOT_CONECTADO</p>';
+                statusText.className = 'mt-4 text-xs text-green-500 uppercase';
+            } else if (bot.qr) {
+                container.innerHTML = '<img src="' + bot.qr + '" class="w-full h-full p-2">';
+            } else {
+                container.innerHTML = '<p class="text-black text-[10px] text-center p-2">Aguardando QR...</p>';
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('bot-modal').classList.add('hidden');
+            currentBotId = null;
+            if (qrInterval) clearInterval(qrInterval);
+        }
+
+        async function saveBotConfig() {
             const body = {
-                systemPrompt: document.getElementById('systemPrompt').value,
-                welcomeMsg: document.getElementById('welcomeMsg').value,
-                exitMsg: document.getElementById('exitMsg').value,
-                geminiKeys: keysArray,
-                knowledgeBase: document.getElementById('knowledgeBase').value
+                name: document.getElementById('botName').value,
+                systemPrompt: document.getElementById('botPrompt').value,
+                welcomeMsg: document.getElementById('botWelcome').value,
+                exitMsg: document.getElementById('botExit').value,
+                knowledgeBase: document.getElementById('botKnowledge').value,
+                geminiKeys: document.getElementById('botKeys').value,
+                respondInPrivate: document.getElementById('respondInPrivate').checked,
+                respondInGroups: document.getElementById('respondInGroups').checked,
+                privateWelcomeEnabled: document.getElementById('privateWelcomeEnabled').checked,
+                privateExitEnabled: document.getElementById('privateExitEnabled').checked,
+                groupWelcomeEnabled: document.getElementById('groupWelcomeEnabled').checked,
+                groupWelcomeMsg: document.getElementById('groupWelcomeMsg').value,
+                groupExitEnabled: document.getElementById('groupExitEnabled').checked,
+                groupExitMsg: document.getElementById('groupExitMsg').value
             };
-            try {
-                const res = await fetch('/api/update-config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(body)
-                });
-                const data = await res.json();
-                alert(data.status);
-            } catch (e) {
-                alert('Erro ao salvar configuração');
+            await fetch('/api/bot/' + currentBotId + '/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            alert("Configuração salva!");
+            fetchBots();
+        }
+
+        setInterval(fetchBots, 10000);
+        fetchBots();
+    </script>
+</body>
+</html>
+    `);
+});
+
+// Client Management Page
+app.get('/manage/:id', (req, res) => {
+    const bot = db.prepare('SELECT name FROM bots WHERE id = ?').get(req.params.id) as any;
+    if (!bot) return res.status(404).send("Bot não encontrado");
+
+    res.send(`
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gerenciar Bot: ${bot.name}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Fira Code', monospace; background-color: #0a0a0a; color: #00ff00; }
+        .hacker-border { border: 1px solid #00ff00; box-shadow: 0 0 10px #00ff00; }
+        .hacker-input { background: #1a1a1a; border: 1px solid #333; color: #00ff00; }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+    <div class="max-w-2xl mx-auto">
+        <h1 class="text-2xl font-bold mb-8 underline uppercase tracking-widest">GERENCIAMENTO_BOT: ${bot.name}</h1>
+        
+        <div class="grid grid-cols-1 gap-8">
+            <section class="hacker-border p-6 rounded-lg bg-black">
+                <h2 class="text-xl mb-4 underline">WHATSAPP_LINK</h2>
+                <div id="qr-container" class="w-64 h-64 bg-white mx-auto flex items-center justify-center rounded mb-4">
+                    <p class="text-black text-xs text-center">Carregando...</p>
+                </div>
+                <p id="status-text" class="text-center text-sm font-bold">STATUS: VERIFICANDO...</p>
+            </section>
+
+            <section class="hacker-border p-6 rounded-lg bg-black">
+                <h2 class="text-xl mb-4 underline">CONFIGURAÇÕES_RÁPIDAS</h2>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-xs uppercase mb-1">Mensagem de Boas-vindas</label>
+                        <input id="welcome" type="text" class="w-full hacker-input p-2 rounded text-sm">
+                    </div>
+                    <div>
+                        <label class="block text-xs uppercase mb-1">Base de Conhecimento</label>
+                        <textarea id="knowledge" rows="4" class="w-full hacker-input p-2 rounded text-sm"></textarea>
+                    </div>
+
+                    <div class="hacker-border p-4 rounded bg-black/50 space-y-4">
+                        <h3 class="text-xs underline uppercase">Recursos de Grupo</h3>
+                        
+                        <div class="flex items-center justify-between">
+                            <label class="text-[10px] uppercase">Boas-vindas em Grupos</label>
+                            <input id="groupWelcomeEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                        </div>
+                        <textarea id="groupWelcomeMsg" rows="2" class="w-full hacker-input p-2 rounded text-[10px]" placeholder="Mensagem ao entrar no grupo..."></textarea>
+
+                        <div class="flex items-center justify-between mt-2">
+                            <label class="text-[10px] uppercase">Mensagem ao Sair (Privado)</label>
+                            <input id="groupExitEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
+                        </div>
+                        <textarea id="groupExitMsg" rows="2" class="w-full hacker-input p-2 rounded text-[10px]" placeholder="Mensagem enviada no privado ao sair..."></textarea>
+                    </div>
+
+                    <button onclick="save()" class="w-full bg-green-900 text-white py-2 rounded border border-green-400 font-bold">SALVAR_ALTERAÇÕES</button>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script>
+        const botId = "${req.params.id}";
+        
+        async function update() {
+            const res = await fetch('/api/bot/' + botId + '/config');
+            const data = await res.json();
+            
+            const container = document.getElementById('qr-container');
+            const status = document.getElementById('status-text');
+            
+            status.innerText = 'STATUS: ' + data.status.toUpperCase();
+            
+            if (data.status === 'Conectado') {
+                container.innerHTML = '<p class="text-green-600 font-bold">CONECTADO_COM_SUCESSO</p>';
+                status.className = 'text-center text-sm font-bold text-green-500';
+            } else if (data.qr) {
+                container.innerHTML = '<img src="' + data.qr + '" class="w-full h-full p-2">';
+            }
+            
+            if (!document.getElementById('welcome').value) {
+                document.getElementById('welcome').value = data.welcomeMsg;
+                document.getElementById('knowledge').value = data.knowledgeBase || "";
+                
+                document.getElementById('groupWelcomeEnabled').checked = data.groupWelcomeEnabled === 1;
+                document.getElementById('groupWelcomeMsg').value = data.groupWelcomeMsg || "";
+                document.getElementById('groupExitEnabled').checked = data.groupExitEnabled === 1;
+                document.getElementById('groupExitMsg').value = data.groupExitMsg || "";
             }
         }
 
-        async function fetchChats() {
-            try {
-                const res = await fetch('/api/chats');
-                const data = await res.json();
-                const list = document.getElementById('chat-list');
-                list.innerHTML = '';
-                
-                if (data.length === 0) {
-                    list.innerHTML = '<p class="text-gray-500 text-xs text-center">Nenhum chat encontrado.</p>';
-                    return;
-                }
-
-                data.forEach(chat => {
-                    const btn = document.createElement('button');
-                    btn.className = 'w-full text-left p-2 border border-gray-800 rounded hover:border-green-500 transition-all text-xs truncate';
-                    btn.innerText = chat.jid.split('@')[0];
-                    btn.onclick = () => loadChat(chat.jid);
-                    list.appendChild(btn);
-                });
-            } catch (e) {}
+        async function save() {
+            const res = await fetch('/api/bot/' + botId + '/config');
+            const current = await res.json();
+            
+            const body = {
+                ...current,
+                welcomeMsg: document.getElementById('welcome').value,
+                knowledgeBase: document.getElementById('knowledge').value,
+                groupWelcomeEnabled: document.getElementById('groupWelcomeEnabled').checked,
+                groupWelcomeMsg: document.getElementById('groupWelcomeMsg').value,
+                groupExitEnabled: document.getElementById('groupExitEnabled').checked,
+                groupExitMsg: document.getElementById('groupExitMsg').value
+            };
+            
+            await fetch('/api/bot/' + botId + '/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            alert("Salvo!");
         }
 
-        async function loadChat(jid) {
-            try {
-                const res = await fetch('/api/chat/' + encodeURIComponent(jid));
-                const data = await res.json();
-                const viewer = document.getElementById('chat-viewer');
-                viewer.innerHTML = '';
-                
-                data.forEach(msg => {
-                    const div = document.createElement('div');
-                    const isBot = msg.role === 'model';
-                    div.className = 'max-w-[80%] p-2 rounded text-xs ' + (isBot ? 'ml-auto bg-green-900/20 border border-green-900/50' : 'mr-auto bg-gray-800');
-                    
-                    const time = new Date(msg.timestamp).toLocaleString();
-                    const roleName = isBot ? 'TECHSTAR_BOT' : 'USER';
-                    const roleClass = isBot ? 'text-green-400' : 'text-blue-400';
-                    
-                    div.innerHTML = 
-                        '<p class="font-bold mb-1 ' + roleClass + '">' + roleName + '</p>' +
-                        '<p>' + msg.text + '</p>' +
-                        '<p class="text-[8px] text-gray-500 mt-1 text-right">' + time + '</p>';
-                    
-                    viewer.appendChild(div);
-                });
-                viewer.scrollTop = viewer.scrollHeight;
-            } catch (e) {}
-        }
-
-        async function analyzeChats() {
-            const container = document.getElementById('ai-analysis-container');
-            const summary = document.getElementById('ai-summary');
-            summary.innerText = "Analisando conversas com Gemini...";
-            container.classList.remove('hidden');
-
-            try {
-                const res = await fetch('/api/analyze-chats');
-                const data = await res.json();
-                if (data.error) throw new Error(data.error);
-                summary.innerText = data.summary;
-            } catch (e) {
-                summary.innerText = "Erro na análise: " + e.message;
-            }
-        }
-
-        setInterval(fetchStatus, 5000);
-        setInterval(fetchQR, 5000);
-        setInterval(fetchChats, 10000);
-        fetchConfig();
-        fetchStatus();
-        fetchQR();
-        fetchChats();
+        setInterval(update, 3000);
+        update();
     </script>
 </body>
 </html>
@@ -418,167 +962,10 @@ app.get('/', (req, res) => {
 });
 
 async function connectWA() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info');
-    const { version } = await fetchLatestBaileysVersion();
-
-    sock = makeWASocket({
-        version,
-        logger: pino({ level: 'silent' }),
-        printQRInTerminal: true,
-        auth: state,
-        browser: ["TechStar Bot", "Chrome", "1.0.0"]
-    });
-
-    sock.ev.on('creds.update', saveCreds);
-
-    sock.ev.on('connection.update', (update: any) => {
-        const { connection, lastDisconnect, qr } = update;
-        
-        if (qr) {
-            qrcode.toDataURL(qr, (err, url) => {
-                qrCodeData = url;
-            });
-        }
-
-        if (connection === 'close') {
-            connectionStatus = "Desconectado";
-            const shouldReconnect = (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('Conexão fechada. Reconectando...', shouldReconnect);
-            if (shouldReconnect) connectWA();
-        } else if (connection === 'open') {
-            connectionStatus = "Conectado";
-            qrCodeData = "";
-            console.log('Conexão aberta com sucesso!');
-        }
-    });
-
-    // Lógica de Grupos
-    sock.ev.on('group-participants.update', async (anu: any) => {
-        const { id, participants, action } = anu;
-        const metadata = await sock.groupMetadata(id);
-
-        for (const num of participants) {
-            if (action === 'add') {
-                // Boas-vindas no grupo
-                await sock.sendMessage(id, { text: config.welcomeMsg });
-                // Mensagem no privado
-                await sock.sendMessage(num, { text: `Olá! ${config.welcomeMsg}` });
-            } else if (action === 'remove') {
-                // Feedback no privado
-                await sock.sendMessage(num, { text: config.exitMsg });
-            }
-        }
-    });
-
-    // Resposta Inteligente com Gemini
-    sock.ev.on('messages.upsert', async (m: any) => {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
-
-        const jid = msg.key.remoteJid;
-        const isGroup = jid.endsWith('@g.us');
-        
-        if (!sock.user) {
-            console.warn("[WARN] Mensagem recebida mas sock.user ainda não está definido.");
-            return;
-        }
-
-        const botFullId = sock.user.id;
-        const botNumber = botFullId.split(':')[0].split('@')[0];
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-
-        // Lógica de Menção em Grupos
-        if (isGroup) {
-            const contextInfo = msg.message.extendedTextMessage?.contextInfo;
-            const mentions = contextInfo?.mentionedJid || [];
-            const isReplyToBot = contextInfo?.participant?.includes(botNumber);
-            const hasMentionMetadata = mentions.some((m: string) => m.includes(botNumber));
-            const hasTextMention = text.includes(`@${botNumber}`);
-            
-            console.log(`[DEBUG] Grupo: ${jid} | BotNum: ${botNumber} | Mentions: ${mentions} | ReplyToBot: ${isReplyToBot} | Text: ${text}`);
-
-            if (!hasMentionMetadata && !hasTextMention && !isReplyToBot) return;
-        }
-
-        if (text) {
-            try {
-                if (genAIs.length === 0) {
-                    await sock.sendMessage(jid, { text: "⚠️ Erro: Nenhuma chave Gemini configurada no Painel Admin." });
-                    return;
-                }
-
-                // Retry logic for 503 and 429 errors with rotation
-                let attempts = 0;
-                const maxAttempts = genAIs.length * 2; // Allow rotating through all keys twice
-                let response;
-
-                const fullSystemPrompt = `${config.systemPrompt}\n\nBASE DE CONHECIMENTO:\n${config.knowledgeBase || "Nenhuma informação adicional fornecida."}\n\nIMPORTANTE: Seja natural, humano e lembre-se do contexto da conversa acima. Não repita informações que já foram ditas se não for necessário.`;
-
-                const history = getHistory(jid);
-                saveMessage(jid, 'user', text); // Save current user message to history
-
-                while (attempts < maxAttempts) {
-                    try {
-                        const currentAI = genAIs[currentKeyIndex];
-                        response = await currentAI.models.generateContent({
-                            model: "gemini-3-flash-preview",
-                            contents: [...history, { role: 'user', parts: [{ text }] }],
-                            config: {
-                                systemInstruction: fullSystemPrompt
-                            }
-                        });
-                        break; // Success!
-                    } catch (err: any) {
-                        attempts++;
-                        const is503 = err.message?.includes("503");
-                        const is429 = err.message?.includes("429") || err.message?.includes("quota");
-                        
-                        if (is429) {
-                            console.warn(`[ROTATION] Chave ${currentKeyIndex + 1} atingiu limite. Rotacionando...`);
-                            currentKeyIndex = (currentKeyIndex + 1) % genAIs.length;
-                            // No delay for rotation, just try next key
-                            continue;
-                        }
-
-                        if (is503 && attempts < maxAttempts) {
-                            const delay = 2000 * attempts;
-                            console.warn(`Gemini 503 - Tentativa ${attempts}. Aguardando ${delay}ms...`);
-                            await new Promise(resolve => setTimeout(resolve, delay));
-                            continue;
-                        }
-                        throw err;
-                    }
-                }
-                
-                const responseText = response?.text;
-                if (responseText) {
-                    saveMessage(jid, 'model', responseText); // Save bot response to history
-                    await sock.sendMessage(jid, { text: responseText });
-                }
-            } catch (error: any) {
-                console.error("Erro no Gemini:", error);
-                let errorMsg = "⚠️ Erro na IA: Ocorreu um problema ao processar sua mensagem.";
-                
-                if (error.message?.includes("503") || error.message?.includes("UNAVAILABLE")) {
-                    errorMsg = "⚠️ O Google está com alta demanda no momento. Por favor, tente novamente em alguns instantes.";
-                } else if (error.message?.includes("429") || error.message?.includes("quota") || error.message?.includes("RESOURCE_EXHAUSTED")) {
-                    errorMsg = "⚠️ Limite de Uso Atingido: Você atingiu o limite de mensagens gratuitas do Google Gemini. Por favor, aguarde alguns minutos ou considere usar uma chave de API com plano pago.";
-                } else if (error.message?.includes("API key was reported as leaked") || error.message?.includes("leaked")) {
-                    errorMsg = "⚠️ Erro Crítico: Sua chave de API do Gemini foi exposta e bloqueada pelo Google. Por favor, gere uma NOVA chave e atualize no Painel Admin.";
-                } else if (error.message?.includes("API key not valid")) {
-                    errorMsg = "⚠️ Erro: A chave de API do Gemini é inválida. Verifique a chave no seu Painel Admin.";
-                }
-                
-                await sock.sendMessage(jid, { text: errorMsg });
-            }
-        }
-    });
+    // This function is now replaced by startBot(botId) logic
 }
 
 const PORT = 3000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Painel TechStar rodando na porta ${PORT}`);
-    connectWA().catch(err => {
-        console.error("Erro fatal ao iniciar WhatsApp:", err);
-    });
+    console.log(`Painel TechStar Multi-Bot rodando na porta ${PORT}`);
 });
