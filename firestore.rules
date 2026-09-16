@@ -120,6 +120,18 @@ service cloud.firestore {
       }
     }
 
+    // Admin Settings collection
+    match /adminSettings/{docId} {
+      allow get, create, update, delete: if isValidId(docId);
+      allow list: if true;
+    }
+
+    // Bot Access Requests collection
+    match /botAccessRequests/{reqId} {
+      allow get, create, update, delete: if isValidId(reqId);
+      allow list: if true;
+    }
+
     // Global Default-Deny: Prevent all other unauthorized public paths
     match /{document=**} {
       allow read, write: if false;
