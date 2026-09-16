@@ -93,7 +93,7 @@ Se não corresponder a nenhuma intenção administrativa acima, retorne:
 Mensagem a analisar: "${clean}"`;
 
             const resp = await ai.models.generateContent({
-                model: 'gemini-3.8-flash',
+                model: 'gemini-2.5-flash',
                 contents: prompt,
                 config: { responseMimeType: 'application/json' }
             });
@@ -1168,7 +1168,7 @@ export async function handleWhatsAppAdminMessage(opts: {
     }
 
     // 16. PROCESSAMENTO POR LINGUAGEM NATURAL (NLU E INTENT MAPPING)
-    const firstGeminiKey = (currentBot.geminiKeys || '').split(',')[0]?.trim();
+    const firstGeminiKey = (currentBot.geminiKeys || '').split(',')[0]?.trim() || process.env.GEMINI_API_KEY;
     const parsedIntent = await parseOwnerIntent(cleanText, firstGeminiKey);
 
     if (parsedIntent) {

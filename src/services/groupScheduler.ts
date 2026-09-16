@@ -26,8 +26,9 @@ export async function generateDailyMotivation(
   geminiKeysStr?: string,
   language: 'pt' | 'en' = 'pt'
 ): Promise<string> {
-  if (geminiKeysStr) {
-    const keys = geminiKeysStr.split(',').map(k => k.trim()).filter(Boolean);
+  const keysSource = geminiKeysStr || process.env.GEMINI_API_KEY || '';
+  if (keysSource) {
+    const keys = keysSource.split(',').map(k => k.trim()).filter(Boolean);
     if (keys.length > 0) {
       try {
         const cleanKey = keys[0].replace(/["']/g, '');
@@ -37,7 +38,7 @@ export async function generateDailyMotivation(
           : `Escreva uma mensagem motivacional e inspiradora para o dia, direcionada a um grupo de WhatsApp. Tópico/Foco: "${topic || 'Foco, Produtividade, Superação e Sucesso'}". Máximo 2 a 3 frases com impacto e sabedoria. Não use hashtags.`;
 
         const resp = await ai.models.generateContent({
-          model: 'gemini-3.8-flash',
+          model: 'gemini-2.5-flash',
           contents: prompt
         });
 

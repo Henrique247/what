@@ -245,7 +245,11 @@ const qrCodes = new Map<string, string>();
 const connectionStatuses = new Map<string, string>();
 
 function getGenAIInstances(keysStr: string) {
-    const keys = keysStr.split(',').map(k => k.trim()).filter(k => k !== "");
+    let keys = keysStr ? keysStr.split(',').map(k => k.trim()).filter(k => k !== "") : [];
+    // Fallback to server-wide GEMINI_API_KEY environment variable if no bot-specific keys set
+    if (keys.length === 0 && process.env.GEMINI_API_KEY) {
+        keys = process.env.GEMINI_API_KEY.split(',').map(k => k.trim()).filter(k => k !== "");
+    }
     return keys.map((k: string) => {
         const cleanKey = k.trim().replace(/["']/g, '');
         return cleanKey ? new GoogleGenAI({ apiKey: cleanKey }) : null;
@@ -590,7 +594,10 @@ async function startBot(botId: string) {
         }
 
         const genAIs = getGenAIInstances(currentBot.geminiKeys || "");
-        if (genAIs.length === 0) return;
+        if (genAIs.length === 0) {
+            console.warn(`[Bot ${botId}] Nenhuma chave de API Gemini configurada (geminiKeys e GEMINI_API_KEY estão vazios). O bot não pode responder.`);
+            return;
+        }
 
         try {
             const history = currentBot.memoryEnabled ? await getHistory(botId, jid) : [];
@@ -639,11 +646,23 @@ async function startBot(botId: string) {
             while (attempts < maxAttempts) {
                 try {
                     const currentAI = genAIs[keyIndex % genAIs.length];
-                    response = await currentAI.models.generateContent({
-                        model: "gemini-3-flash-preview",
-                        contents: [...history, { role: 'user', parts }],
-                        config: { systemInstruction: fullSystemPrompt }
-                    });
+                    try {
+                        response = await currentAI.models.generateContent({
+                            model: "gemini-2.5-flash",
+                            contents: [...history, { role: 'user', parts }],
+                            config: { systemInstruction: fullSystemPrompt }
+                        });
+                    } catch (modelErr: any) {
+                        if (modelErr.message?.includes("not found") || modelErr.message?.includes("404")) {
+                            response = await currentAI.models.generateContent({
+                                model: "gemini-1.5-flash",
+                                contents: [...history, { role: 'user', parts }],
+                                config: { systemInstruction: fullSystemPrompt }
+                            });
+                        } else {
+                            throw modelErr;
+                        }
+                    }
                     currentKeyIndexes.set(botId, keyIndex % genAIs.length);
                     break;
                 } catch (err: any) {
