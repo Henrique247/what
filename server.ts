@@ -699,6 +699,7 @@ async function ensureAdminSettings() {
             const defaultPasswordHash = hashSecret('123456');
             await setDoc(ref, {
                 passwordHash: defaultPasswordHash,
+                isCustom: false,
                 createdAt: serverTimestamp()
             });
             console.log("[Admin] Configuração de admin padrão inicializada com sucesso.");
@@ -709,17 +710,94 @@ async function ensureAdminSettings() {
 }
 ensureAdminSettings();
 
-// API Routes for Multi-Bot & Authentication
-app.post('/api/admin/login', rateLimiter(20, 60000), async (req, res) => {
+// Persistent Rate Limiter & Security Validation Helpers
+const WEAK_PINS = ['0000', '1111', '1234', '123456', '2222', '3333', '4444', '5555', '6666', '7777', '8888', '9999', '1122', '1212'];
+
+function isWeakPin(pin: string): boolean {
+    if (!pin || pin.length < 4 || pin.length > 6) return true;
+    if (WEAK_PINS.includes(pin)) return true;
+    if (/^(\d)\1+$/.test(pin)) return true;
+    return false;
+}
+
+async function checkAndRecordAttempt(key: string, maxAttempts: number = 5, windowMs: number = 15 * 60 * 1000): Promise<{ allowed: boolean; retryAfterSeconds?: number }> {
+    const now = Date.now();
+    const safeKey = key.replace(/[/.]/g, '_');
+    const ref = doc(firestoreDb, 'rateLimits', safeKey);
+    try {
+        const snap = await getDoc(ref);
+        let data = snap.exists() ? snap.data() : { attempts: 0, resetTime: now + windowMs, lockedUntil: 0 };
+
+        if (now < data.lockedUntil) {
+            const retryAfterSeconds = Math.ceil((data.lockedUntil - now) / 1000);
+            return { allowed: false, retryAfterSeconds };
+        }
+
+        if (now > data.resetTime) {
+            data = { attempts: 1, resetTime: now + windowMs, lockedUntil: 0 };
+            await setDoc(ref, data);
+            return { allowed: true };
+        }
+
+        data.attempts += 1;
+        if (data.attempts > maxAttempts) {
+            data.lockedUntil = now + windowMs;
+            await setDoc(ref, data);
+            const retryAfterSeconds = Math.ceil((data.lockedUntil - now) / 1000);
+            return { allowed: false, retryAfterSeconds };
+        }
+
+        await setDoc(ref, data);
+        return { allowed: true };
+    } catch (e) {
+        return { allowed: true };
+    }
+}
+
+async function resetAttempts(key: string) {
+    try {
+        const safeKey = key.replace(/[/.]/g, '_');
+        const ref = doc(firestoreDb, 'rateLimits', safeKey);
+        await setDoc(ref, { attempts: 0, resetTime: 0, lockedUntil: 0 });
+    } catch {}
+}
+
+// API Routes for Multi-Bot & Authentication with Strict Security Limits
+app.post('/api/admin/login', async (req, res) => {
     try {
         const { password } = req.body;
         if (!password) return res.status(400).json({ error: "Chave de acesso obrigatória" });
 
+        const clientIp = req.ip || req.socket.remoteAddress || 'ip_unknown';
+        const rateKey = `admin_login_${clientIp}`;
+        const limitCheck = await checkAndRecordAttempt(rateKey, 5, 15 * 60 * 1000);
+
+        if (!limitCheck.allowed) {
+            await recordAuditLog(firestoreDb, {
+                botId: 'global',
+                role: 'ADMIN',
+                action: 'LOGIN_BLOCKED',
+                result: 'DENIED',
+                details: `Muitas tentativas falhadas no Admin. Bloqueado por ${limitCheck.retryAfterSeconds}s`
+            });
+            res.setHeader('Retry-After', limitCheck.retryAfterSeconds || 900);
+            return res.status(429).json({ error: `Muitas tentativas falhadas. Conta temporariamente bloqueada por 15 minutos.` });
+        }
+
         const ref = doc(firestoreDb, 'adminSettings', 'general');
         const snap = await getDoc(ref);
         let valid = false;
+        let isCustom = false;
+
         if (snap.exists()) {
-            valid = verifySecret(password, snap.data().passwordHash);
+            const data = snap.data();
+            isCustom = !!data.isCustom;
+            // If initial key '123456' has already been changed, 123456 must be immediately invalid
+            if (password === '123456' && isCustom) {
+                valid = false;
+            } else {
+                valid = verifySecret(password, data.passwordHash);
+            }
         } else {
             valid = (password === '123456');
         }
@@ -728,18 +806,20 @@ app.post('/api/admin/login', rateLimiter(20, 60000), async (req, res) => {
             await recordAuditLog(firestoreDb, {
                 botId: 'global',
                 role: 'ADMIN',
-                action: 'ADMIN_LOGIN_FAILED',
+                action: 'LOGIN_FAILED',
                 result: 'DENIED',
                 details: 'Tentativa de login admin com chave incorreta'
             });
-            return res.status(403).json({ error: "Chave de acesso incorreta" });
+            return res.status(403).json({ error: "Credenciais inválidas." });
         }
 
+        await resetAttempts(rateKey);
         const sessionToken = generateSecureToken();
+
         await recordAuditLog(firestoreDb, {
             botId: 'global',
             role: 'ADMIN',
-            action: 'ADMIN_LOGIN_SUCCESS',
+            action: 'LOGIN_SUCCESS',
             result: 'SUCCESS',
             details: 'Login de Administrador Geral bem-sucedido'
         });
@@ -758,7 +838,12 @@ app.post('/api/admin/change-password', async (req, res) => {
         const snap = await getDoc(ref);
         let valid = false;
         if (snap.exists()) {
-            valid = verifySecret(currentPassword, snap.data().passwordHash);
+            const data = snap.data();
+            if (currentPassword === '123456' && data.isCustom) {
+                valid = false;
+            } else {
+                valid = verifySecret(currentPassword, data.passwordHash);
+            }
         } else {
             valid = (currentPassword === '123456');
         }
@@ -772,7 +857,11 @@ app.post('/api/admin/change-password', async (req, res) => {
         }
 
         const newHash = hashSecret(newPassword);
-        await setDoc(ref, { passwordHash: newHash, updatedAt: serverTimestamp() }, { merge: true });
+        await setDoc(ref, { 
+            passwordHash: newHash, 
+            isCustom: true, 
+            updatedAt: serverTimestamp() 
+        }, { merge: true });
 
         await recordAuditLog(firestoreDb, {
             botId: 'global',
@@ -789,36 +878,51 @@ app.post('/api/admin/change-password', async (req, res) => {
     }
 });
 
-app.post('/api/bot/:id/login', rateLimiter(20, 60000), async (req, res) => {
+app.post('/api/bot/:id/login', async (req, res) => {
     try {
         const botId = req.params.id;
         const { pin } = req.body;
         if (!pin) return res.status(400).json({ error: "PIN de acesso obrigatório" });
 
+        const clientIp = req.ip || req.socket.remoteAddress || 'ip_unknown';
+        const rateKey = `bot_login_${botId}_${clientIp}`;
+        const limitCheck = await checkAndRecordAttempt(rateKey, 5, 15 * 60 * 1000);
+
+        if (!limitCheck.allowed) {
+            await recordAuditLog(firestoreDb, {
+                botId,
+                role: 'OWNER',
+                action: 'LOGIN_BLOCKED',
+                result: 'DENIED',
+                details: `Muitas tentativas falhadas de PIN. Bloqueado por ${limitCheck.retryAfterSeconds}s`
+            });
+            res.setHeader('Retry-After', limitCheck.retryAfterSeconds || 900);
+            return res.status(429).json({ error: `Muitas tentativas falhadas. Acesso temporariamente bloqueado por 15 minutos.` });
+        }
+
         const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
         if (!botDoc.exists()) return res.status(404).json({ error: "Bot não encontrado" });
         const botData = botDoc.data();
 
-        let pinValid = false;
-        if (botData.pinHash) {
-            pinValid = verifySecret(pin, botData.pinHash);
-        } else {
-            pinValid = (pin === '1234');
-            if (pinValid) {
-                await updateDoc(doc(firestoreDb, 'bots', botId), { pinHash: hashSecret('1234') });
-            }
+        // Check if first access is completed
+        if (!botData.pinHash || !botData.firstAccessCompleted) {
+            return res.json({ success: false, firstAccessRequired: true, message: "Primeiro acesso: configure seu PIN." });
         }
+
+        const pinValid = verifySecret(pin, botData.pinHash);
 
         if (!pinValid) {
             await recordAuditLog(firestoreDb, {
                 botId,
                 role: 'OWNER',
-                action: 'BOT_LOGIN_FAILED',
+                action: 'LOGIN_FAILED',
                 result: 'DENIED',
                 details: 'Tentativa de login com PIN inválido'
             });
             return res.status(403).json({ error: "PIN incorreto para este bot" });
         }
+
+        await resetAttempts(rateKey);
 
         if (!botData.accessToken) {
             const newToken = generateSecureToken();
@@ -829,7 +933,7 @@ app.post('/api/bot/:id/login', rateLimiter(20, 60000), async (req, res) => {
         await recordAuditLog(firestoreDb, {
             botId,
             role: 'OWNER',
-            action: 'BOT_LOGIN_SUCCESS',
+            action: 'LOGIN_SUCCESS',
             result: 'SUCCESS',
             details: 'Login do proprietário bem-sucedido'
         });
@@ -841,17 +945,63 @@ app.post('/api/bot/:id/login', rateLimiter(20, 60000), async (req, res) => {
     }
 });
 
-app.post('/api/bot/:id/forgot-pin', rateLimiter(10, 60000), async (req, res) => {
+app.post('/api/bot/:id/set-first-pin', async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const { pin, confirmPin } = req.body;
+
+        if (!pin || !confirmPin) return res.status(400).json({ error: "PIN e confirmação são obrigatórios" });
+        if (pin !== confirmPin) return res.status(400).json({ error: "Os PINs não coincidem" });
+        if (isWeakPin(pin)) return res.status(400).json({ error: "O PIN é muito fraco ou óbvio (ex: 0000, 1234, dígitos repetidos). Escolha um PIN seguro de 4 a 6 dígitos." });
+
+        const botRef = doc(firestoreDb, 'bots', botId);
+        const botDoc = await getDoc(botRef);
+        if (!botDoc.exists()) return res.status(404).json({ error: "Bot não encontrado" });
+
+        const pinHash = hashSecret(pin);
+        const accessToken = generateSecureToken();
+
+        await updateDoc(botRef, {
+            pinHash,
+            firstAccessCompleted: true,
+            accessToken
+        });
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: 'OWNER',
+            action: 'OWNER_FIRST_ACCESS',
+            result: 'SUCCESS',
+            details: 'Primeiro acesso do proprietário concluído e PIN configurado com sucesso'
+        });
+
+        res.json({ success: true, accessToken, message: "PIN configurado com sucesso!" });
+    } catch (e: any) {
+        console.error("Erro no primeiro acesso:", e);
+        res.status(500).json({ error: "Erro ao configurar primeiro acesso" });
+    }
+});
+
+app.post('/api/bot/:id/forgot-pin', async (req, res) => {
     try {
         const botId = req.params.id;
         const { fullName, phone, email } = req.body;
         if (!fullName || !phone) return res.status(400).json({ error: "Nome completo e número de WhatsApp são obrigatórios" });
 
+        const clientIp = req.ip || req.socket.remoteAddress || 'ip_unknown';
+        const cleanInputPhone = normalizePhone(phone);
+
+        // Rate limits: max 3 requests per phone in 1 hour, max 5 requests per IP in 1 hour
+        const phoneRate = await checkAndRecordAttempt(`forgot_phone_${cleanInputPhone}`, 3, 60 * 60 * 1000);
+        const ipRate = await checkAndRecordAttempt(`forgot_ip_${clientIp}`, 5, 60 * 60 * 1000);
+
+        if (!phoneRate.allowed || !ipRate.allowed) {
+            return res.status(429).json({ error: "Muitas solicitações de recuperação. Tente novamente mais tarde." });
+        }
+
         const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
         if (!botDoc.exists()) return res.status(404).json({ error: "Bot não encontrado" });
         const botData = botDoc.data();
-
-        const cleanInputPhone = normalizePhone(phone);
 
         await addDoc(collection(firestoreDb, 'botAccessRequests'), {
             botId,
@@ -899,7 +1049,7 @@ app.post('/api/admin/recovery-requests/:reqId/approve', async (req, res) => {
     try {
         const reqId = req.params.reqId;
         const { newPin } = req.body;
-        if (!newPin || newPin.length < 4) return res.status(400).json({ error: "Novo PIN deve ter pelo menos 4 dígitos" });
+        if (!newPin || isWeakPin(newPin)) return res.status(400).json({ error: "Novo PIN inválido ou muito fraco (deve ter 4 a 6 dígitos e não ser óbvio)." });
 
         const reqDocRef = doc(firestoreDb, 'botAccessRequests', reqId);
         const reqDoc = await getDoc(reqDocRef);
@@ -912,7 +1062,8 @@ app.post('/api/admin/recovery-requests/:reqId/approve', async (req, res) => {
         const newAccessToken = generateSecureToken();
         await updateDoc(botRef, {
             pinHash: hashSecret(newPin),
-            accessToken: newAccessToken
+            accessToken: newAccessToken,
+            firstAccessCompleted: true
         });
 
         await updateDoc(reqDocRef, {
@@ -925,7 +1076,7 @@ app.post('/api/admin/recovery-requests/:reqId/approve', async (req, res) => {
             role: 'ADMIN',
             action: 'PIN_RESET_APPROVED',
             result: 'SUCCESS',
-            details: `PIN redefinido com sucesso pelo Admin para o bot ${reqData.botId}`
+            details: `PIN redefinido com sucesso pelo Admin para o bot ${reqData.botId} e sessões anteriores invalidadas`
         });
 
         res.json({ success: true, message: "PIN redefinido com sucesso e sessões anteriores invalidadas." });
@@ -1177,34 +1328,44 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
         }
 
         const botRef = doc(firestoreDb, 'bots', req.params.id);
-        const normPhone = normalizePhone(ownerNumber || currentBot.ownerPhone || currentBot.ownerNumber);
+        
+        const updatePayload: any = {};
 
-        const updatePayload: any = {
-            name: name !== undefined ? name : currentBot.name,
-            systemPrompt: systemPrompt !== undefined ? systemPrompt : currentBot.systemPrompt,
-            welcomeMsg: welcomeMsg !== undefined ? welcomeMsg : currentBot.welcomeMsg,
-            exitMsg: exitMsg !== undefined ? exitMsg : currentBot.exitMsg,
-            knowledgeBase: knowledgeBase !== undefined ? knowledgeBase : currentBot.knowledgeBase,
-            ownerName: ownerName !== undefined ? ownerName : currentBot.ownerName,
-            ownerNumber: ownerNumber !== undefined ? ownerNumber : currentBot.ownerNumber,
-            ownerPhone: normPhone,
-            groupWelcomeEnabled: groupWelcomeEnabled ? 1 : 0,
-            groupWelcomeMsg: groupWelcomeMsg !== undefined ? groupWelcomeMsg : currentBot.groupWelcomeMsg,
-            groupExitEnabled: groupExitEnabled ? 1 : 0,
-            groupExitMsg: groupExitMsg !== undefined ? groupExitMsg : currentBot.groupExitMsg,
-            respondInGroups: respondInGroups ? 1 : 0,
-            respondInPrivate: respondInPrivate ? 1 : 0,
-            privateWelcomeEnabled: privateWelcomeEnabled ? 1 : 0,
-            privateExitEnabled: privateExitEnabled ? 1 : 0,
-            memoryEnabled: memoryEnabled ? 1 : 0,
-            analysisEnabled: analysisEnabled ? 1 : 0,
-            analysisInstructions: analysisInstructions !== undefined ? analysisInstructions : currentBot.analysisInstructions
-        };
+        if (name !== undefined) updatePayload.name = name;
+        if (systemPrompt !== undefined) updatePayload.systemPrompt = systemPrompt;
+        if (welcomeMsg !== undefined) updatePayload.welcomeMsg = welcomeMsg;
+        if (exitMsg !== undefined) updatePayload.exitMsg = exitMsg;
+        if (knowledgeBase !== undefined) updatePayload.knowledgeBase = knowledgeBase;
+        if (ownerName !== undefined) updatePayload.ownerName = ownerName;
+        if (ownerNumber !== undefined) {
+            updatePayload.ownerNumber = ownerNumber;
+            updatePayload.ownerPhone = normalizePhone(ownerNumber);
+        }
+        if (groupWelcomeEnabled !== undefined) updatePayload.groupWelcomeEnabled = groupWelcomeEnabled ? 1 : 0;
+        if (groupWelcomeMsg !== undefined) updatePayload.groupWelcomeMsg = groupWelcomeMsg;
+        if (groupExitEnabled !== undefined) updatePayload.groupExitEnabled = groupExitEnabled ? 1 : 0;
+        if (groupExitMsg !== undefined) updatePayload.groupExitMsg = groupExitMsg;
+        if (respondInGroups !== undefined) updatePayload.respondInGroups = respondInGroups ? 1 : 0;
+        if (respondInPrivate !== undefined) updatePayload.respondInPrivate = respondInPrivate ? 1 : 0;
+        if (privateWelcomeEnabled !== undefined) updatePayload.privateWelcomeEnabled = privateWelcomeEnabled ? 1 : 0;
+        if (privateExitEnabled !== undefined) updatePayload.privateExitEnabled = privateExitEnabled ? 1 : 0;
+        if (memoryEnabled !== undefined) updatePayload.memoryEnabled = memoryEnabled ? 1 : 0;
+        if (analysisEnabled !== undefined) updatePayload.analysisEnabled = analysisEnabled ? 1 : 0;
+        if (analysisInstructions !== undefined) updatePayload.analysisInstructions = analysisInstructions;
 
         // If admin provides geminiKeys, update it. If client/owner, preserve server-stored keys!
         if (authRole === 'ADMIN' && typeof geminiKeys === 'string') {
             updatePayload.geminiKeys = geminiKeys;
         }
+
+        // Final sanitization pass to remove any accidental undefined keys
+        Object.keys(updatePayload).forEach(key => {
+            if (updatePayload[key] === undefined) {
+                delete updatePayload[key];
+            }
+        });
+
+        console.log(`[Config Update] botId: ${req.params.id} | fields: ${Object.keys(updatePayload).join(', ')}`);
 
         await updateDoc(botRef, updatePayload);
 

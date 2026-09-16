@@ -28,6 +28,8 @@ export interface Bot {
   ownerPhone?: string;
   ownerNumber?: string;
   ownerPermissions?: string[];
+  pinHash?: string;
+  firstAccessCompleted?: boolean;
   qr?: string | null;
   hasQR?: boolean;
   createdAt?: any;

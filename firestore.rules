@@ -132,6 +132,12 @@ service cloud.firestore {
       allow list: if true;
     }
 
+    // Rate Limits collection
+    match /rateLimits/{docId} {
+      allow get, create, update, delete: if isValidId(docId);
+      allow list: if true;
+    }
+
     // Global Default-Deny: Prevent all other unauthorized public paths
     match /{document=**} {
       allow read, write: if false;
