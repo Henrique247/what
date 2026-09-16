@@ -250,9 +250,11 @@ function getGenAIInstances(keysStr: string) {
 const currentKeyIndexes = new Map<string, number>();
 
 const startingBots = new Set<string>();
+const botReconnectAttempts = new Map<string, number>();
 
 async function resetBotSession(botId: string) {
     console.log(`[Bot ${botId}] Resetando sessão WhatsApp e gerando novo QR...`);
+    botReconnectAttempts.delete(botId);
     if (activeSocks.has(botId)) {
         try {
             const sock = activeSocks.get(botId);
@@ -277,11 +279,11 @@ async function resetBotSession(botId: string) {
 
 async function startBot(botId: string) {
     if (startingBots.has(botId)) {
-        console.log(`[Bot ${botId}] Já está iniciando, ignorando nova chamada.`);
+        console.log(`[Bot ${botId}] Já está iniciando, ignorando nova chamada (lock ativo).`);
         return;
     }
     startingBots.add(botId);
-    console.log(`[Bot ${botId}] Iniciando bot...`);
+    console.log(`[Bot ${botId}] [BOT_START] Iniciando bot...`);
 
     try {
         const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
@@ -293,7 +295,7 @@ async function startBot(botId: string) {
         }
 
         if (activeSocks.has(botId)) {
-            console.log(`[Bot ${botId}] Fechando conexão anterior...`);
+            console.log(`[Bot ${botId}] Fechando conexão anterior existente...`);
             try { 
                 const oldSock = activeSocks.get(botId);
                 oldSock.ev.removeAllListeners('connection.update');
@@ -311,7 +313,7 @@ async function startBot(botId: string) {
         console.log(`[Bot ${botId}] Buscando versão do Baileys...`);
         const { version } = await fetchLatestBaileysVersion();
 
-        console.log(`[Bot ${botId}] Criando socket...`);
+        console.log(`[Bot ${botId}] [SOCKET_CREATED] Criando socket do Baileys...`);
         const sock = makeWASocket({
             version,
             logger: pino({ level: 'silent' }),
@@ -322,7 +324,7 @@ async function startBot(botId: string) {
             markOnlineOnConnect: false,
             connectTimeoutMs: 60000,
             defaultQueryTimeoutMs: 0,
-            keepAliveIntervalMs: 10000,
+            keepAliveIntervalMs: 15000,
             generateHighQualityLinkPreview: false,
         });
 
@@ -335,7 +337,7 @@ async function startBot(botId: string) {
             const { connection, lastDisconnect, qr } = update;
             
             if (qr) {
-                console.log(`[Bot ${botId}] QR Code recebido do Baileys. Convertendo para DataURL...`);
+                console.log(`[Bot ${botId}] [QR_RECEIVED] QR Code recebido do Baileys. Convertendo para DataURL...`);
                 qrcode.toDataURL(qr, (err, url) => {
                     if (err) {
                         console.error(`[Bot ${botId}] Erro ao converter QR para DataURL:`, err);
@@ -346,57 +348,63 @@ async function startBot(botId: string) {
                 });
             }
 
-        if (connection === 'close') {
-            const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-            console.log(`[Bot ${botId}] Conexão fechada. Código: ${statusCode}`);
-            
-            connectionStatuses.set(botId, "Desconectado");
-            qrCodes.delete(botId);
-            
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            
-            // Re-check if bot is still active in DB before reconnecting
-            const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
-            const bot = botDoc.data();
-            if (!bot || !bot.active) {
-                console.log(`[Bot ${botId}] Bot desativado no banco, não irá reconectar.`);
+            if (connection === 'close') {
+                const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+                console.log(`[Bot ${botId}] [CONNECTION_CLOSE] Conexão fechada. Código: ${statusCode} (Razão: ${lastDisconnect?.error?.message || 'Desconhecida'})`);
+                
+                connectionStatuses.set(botId, "Desconectado");
+                qrCodes.delete(botId);
                 activeSocks.delete(botId);
-                startingBots.delete(botId);
-                return;
-            }
-
-            if (statusCode === DisconnectReason.restartRequired) {
-                console.log(`[Bot ${botId}] Reinício necessário. Reiniciando agora...`);
-                startingBots.delete(botId);
-                startBot(botId);
-            } else if (shouldReconnect) {
-                const delay = 5000;
-                console.log(`[Bot ${botId}] Tentando reconectar em ${delay/1000}s...`);
-                setTimeout(() => {
+                
+                const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+                
+                // Re-check if bot is still active in DB before reconnecting
+                const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+                const currentBot = botDoc.data();
+                if (!currentBot || !currentBot.active) {
+                    console.log(`[Bot ${botId}] Bot desativado no banco, não irá reconectar.`);
                     startingBots.delete(botId);
-                    startBot(botId);
-                }, delay);
-            } else {
-                console.log(`[Bot ${botId}] Deslogado. Não irá reconectar automaticamente.`);
-                activeSocks.delete(botId);
-                startingBots.delete(botId);
-                clearBotSchedulers(botId);
-            }
-        } else if (connection === 'open') {
-            console.log(`[Bot ${botId}] Conexão estabelecida com sucesso!`);
-            connectionStatuses.set(botId, "Conectado");
-            qrCodes.delete(botId);
-            startingBots.delete(botId);
+                    return;
+                }
 
-            // Inicializa agendamentos diários dos grupos
-            initBotGroupSchedulers({
-                botId,
-                getActiveSock: (id) => activeSocks.get(id),
-                firestoreDb,
-                geminiKeys: bot.geminiKeys
-            }).catch(err => console.error(`[Bot ${botId}] Erro ao inicializar agendamentos de grupo:`, err));
-        }
-    });
+                if (isLoggedOut) {
+                    console.log(`[Bot ${botId}] [LOGGED_OUT] Sessão invalidada/deslogada pelo usuário ou WhatsApp. Limpando credenciais...`);
+                    const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
+                    if (fs.existsSync(authPath)) {
+                        try { fs.rmSync(authPath, { recursive: true, force: true }); } catch {}
+                    }
+                    startingBots.delete(botId);
+                    botReconnectAttempts.delete(botId);
+                    clearBotSchedulers(botId);
+                } else {
+                    // Exponential backoff for 408 / network drop / timeout
+                    const attempts = (botReconnectAttempts.get(botId) || 0) + 1;
+                    botReconnectAttempts.set(botId, attempts);
+                    const delay = Math.min(60000, 5000 * Math.pow(1.5, attempts - 1));
+
+                    console.log(`[Bot ${botId}] [RECONNECT_SCHEDULED] Tentativa #${attempts} de reconexão em ${Math.round(delay/1000)}s...`);
+                    setTimeout(() => {
+                        startingBots.delete(botId);
+                        console.log(`[Bot ${botId}] [RECONNECT_STARTED] Iniciando reconexão agendada...`);
+                        startBot(botId);
+                    }, delay);
+                }
+            } else if (connection === 'open') {
+                console.log(`[Bot ${botId}] [CONNECTION_OPEN] Conexão estabelecida com sucesso!`);
+                connectionStatuses.set(botId, "Conectado");
+                qrCodes.delete(botId);
+                startingBots.delete(botId);
+                botReconnectAttempts.set(botId, 0); // Reset attempts on successful connection
+
+                // Inicializa agendamentos diários dos grupos
+                initBotGroupSchedulers({
+                    botId,
+                    getActiveSock: (id) => activeSocks.get(id),
+                    firestoreDb,
+                    geminiKeys: bot.geminiKeys
+                }).catch(err => console.error(`[Bot ${botId}] Erro ao inicializar agendamentos de grupo:`, err));
+            }
+        });
 
     sock.ev.on('group-participants.update', async (anu: any) => {
         console.log(`[Bot ${botId}] Evento group-participants.update recebido:`, anu.action, anu.id);
