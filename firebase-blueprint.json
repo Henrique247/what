@@ -63,6 +63,73 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["botId", "jid", "role", "text", "timestamp"]
+    },
+    "GroupConfig": {
+      "title": "GroupConfig",
+      "description": "Configuration and moderation settings for a WhatsApp group",
+      "type": "object",
+      "properties": {
+        "botId": { "type": "string" },
+        "groupId": { "type": "string" },
+        "groupName": { "type": "string" },
+        "antiLinkEnabled": { "type": "boolean" },
+        "antiLinkAction": { "type": "string", "enum": ["delete", "warn", "remove", "delete_and_warn"] },
+        "allowedLinks": { "type": "array", "items": { "type": "string" } },
+        "antiBadWordsEnabled": { "type": "boolean" },
+        "badWords": { "type": "array", "items": { "type": "string" } },
+        "badWordsAction": { "type": "string", "enum": ["delete", "warn", "remove", "delete_and_warn"] },
+        "antiSpamEnabled": { "type": "boolean" },
+        "antiSpamMaxMessages": { "type": "number" },
+        "antiSpamTimeWindowSeconds": { "type": "number" },
+        "antiSpamAction": { "type": "string", "enum": ["warn", "remove", "delete"] },
+        "adminImmunity": { "type": "boolean" },
+        "maxWarnings": { "type": "number" },
+        "autoKickOnMaxWarnings": { "type": "boolean" },
+        "respondOnlyOnMentionOrReply": { "type": "boolean" },
+        "responseCooldownSeconds": { "type": "number" },
+        "dailyMotivationEnabled": { "type": "boolean" },
+        "dailyMotivationTime": { "type": "string" },
+        "dailyMotivationTimezone": { "type": "string" },
+        "dailyMotivationTopic": { "type": "string" },
+        "welcomeEnabled": { "type": "boolean" },
+        "welcomeMessage": { "type": "string" },
+        "exitEnabled": { "type": "boolean" },
+        "exitMessage": { "type": "string" },
+        "rulesText": { "type": "string" },
+        "language": { "type": "string", "enum": ["pt", "en"] }
+      },
+      "required": ["botId", "groupId", "groupName"]
+    },
+    "GroupWarning": {
+      "title": "GroupWarning",
+      "description": "Warning record for a member in a group",
+      "type": "object",
+      "properties": {
+        "botId": { "type": "string" },
+        "groupId": { "type": "string" },
+        "participantJid": { "type": "string" },
+        "participantPhone": { "type": "string" },
+        "count": { "type": "number" },
+        "reasons": { "type": "array", "items": { "type": "string" } },
+        "lastWarningAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["botId", "groupId", "participantJid", "count"]
+    },
+    "GroupLog": {
+      "title": "GroupLog",
+      "description": "Moderation and automation audit log for a group",
+      "type": "object",
+      "properties": {
+        "botId": { "type": "string" },
+        "groupId": { "type": "string" },
+        "action": { "type": "string" },
+        "actor": { "type": "string" },
+        "targetUser": { "type": "string" },
+        "reason": { "type": "string" },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["botId", "groupId", "action", "timestamp"]
     }
   },
   "firestore": {
@@ -77,6 +144,18 @@
     "/bots/{botId}/audit_logs/{logId}": {
       "schema": "AuditLog",
       "description": "Audit logs for administrative operations on a bot"
+    },
+    "/bots/{botId}/groups/{groupId}": {
+      "schema": "GroupConfig",
+      "description": "Configuration for a WhatsApp group controlled by a bot"
+    },
+    "/bots/{botId}/groups/{groupId}/warnings/{warningId}": {
+      "schema": "GroupWarning",
+      "description": "Member warning records in a group"
+    },
+    "/bots/{botId}/groups/{groupId}/logs/{logId}": {
+      "schema": "GroupLog",
+      "description": "Moderation and automation activity log in a group"
     }
   }
 }

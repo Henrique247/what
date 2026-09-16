@@ -103,6 +103,21 @@ service cloud.firestore {
         allow get, create, update, delete: if isValidId(logId);
         allow list: if true;
       }
+
+      match /groups/{groupId} {
+        allow get, create, update, delete: if isValidId(groupId);
+        allow list: if true;
+
+        match /warnings/{warningId} {
+          allow get, create, update, delete: if isValidId(warningId);
+          allow list: if true;
+        }
+
+        match /logs/{logId} {
+          allow get, create, update, delete: if isValidId(logId);
+          allow list: if true;
+        }
+      }
     }
 
     // Global Default-Deny: Prevent all other unauthorized public paths

@@ -1,6 +1,7 @@
 import express from 'express';
 import dotenv from 'dotenv';
 dotenv.config();
+import { createServer as createViteServer } from 'vite';
 import { default as makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
 import { GoogleGenAI } from "@google/genai";
 import fs from 'fs';
@@ -24,6 +25,9 @@ import {
 } from './src/security';
 import { recordAuditLog, fetchAuditLogs } from './src/audit';
 import { handleWhatsAppAdminMessage } from './src/whatsappController';
+import { processGroupModeration, getGroupConfig, getGroupMeta, recordGroupLog } from './src/services/groupModeration';
+import { initBotGroupSchedulers, clearBotSchedulers, scheduleGroupMotivation, sendDailyMotivationToGroup } from './src/services/groupScheduler';
+import { GroupConfig } from './src/types';
 
 const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
 
@@ -374,12 +378,21 @@ async function startBot(botId: string) {
                 console.log(`[Bot ${botId}] Deslogado. Não irá reconectar automaticamente.`);
                 activeSocks.delete(botId);
                 startingBots.delete(botId);
+                clearBotSchedulers(botId);
             }
         } else if (connection === 'open') {
             console.log(`[Bot ${botId}] Conexão estabelecida com sucesso!`);
             connectionStatuses.set(botId, "Conectado");
             qrCodes.delete(botId);
             startingBots.delete(botId);
+
+            // Inicializa agendamentos diários dos grupos
+            initBotGroupSchedulers({
+                botId,
+                getActiveSock: (id) => activeSocks.get(id),
+                firestoreDb,
+                geminiKeys: bot.geminiKeys
+            }).catch(err => console.error(`[Bot ${botId}] Erro ao inicializar agendamentos de grupo:`, err));
         }
     });
 
@@ -393,23 +406,19 @@ async function startBot(botId: string) {
         }
 
         const { id, participants, action } = anu;
+        const groupConfig = await getGroupConfig(firestoreDb, botId, id);
         
-        if (action === 'add' && currentBot.groupWelcomeEnabled) {
+        const shouldWelcome = groupConfig.welcomeEnabled ?? currentBot.groupWelcomeEnabled;
+        if (action === 'add' && shouldWelcome) {
             console.log(`[Bot ${botId}] Processando entrada de participantes no grupo ${id}. Total: ${participants.length}`);
             for (const participant of participants) {
                 const jid = typeof participant === 'string' ? participant : (participant.jid || participant.id);
-                if (!jid || typeof jid !== 'string') {
-                    console.log(`[Bot ${botId}] JID de participante inválido:`, participant);
-                    continue;
-                }
+                if (!jid || typeof jid !== 'string') continue;
 
-                const mentionText = `@${jid.split('@')[0]}`;
-                const msg = currentBot.groupWelcomeMsg || `Bem-vindo ao grupo ${mentionText}!`;
-                
-                // Se a mensagem não contém a menção, adicionamos no final para garantir que o usuário seja notificado
-                const finalMsg = msg.includes(mentionText) ? msg : `${msg}\n\n${mentionText}`;
+                const norm = jid.split('@')[0];
+                const rawTemplate = groupConfig.welcomeMessage || currentBot.groupWelcomeMsg || `Olá @user! Seja bem-vindo(a) ao grupo!`;
+                const finalMsg = rawTemplate.replace(/@user/g, `@${norm}`);
 
-                console.log(`[Bot ${botId}] Enviando boas-vindas para ${jid} no grupo ${id}`);
                 try {
                     await sock.sendMessage(id, { 
                         text: finalMsg, 
@@ -419,21 +428,19 @@ async function startBot(botId: string) {
                     console.error(`[Bot ${botId}] Erro ao enviar boas-vindas:`, err);
                 }
             }
-        } else if (action === 'remove' && currentBot.groupExitEnabled) {
+        } else if (action === 'remove' && (groupConfig.exitEnabled ?? currentBot.groupExitEnabled)) {
             console.log(`[Bot ${botId}] Processando saída de participantes no grupo ${id}. Total: ${participants.length}`);
             for (const participant of participants) {
                 const jid = typeof participant === 'string' ? participant : (participant.jid || participant.id);
-                if (!jid || typeof jid !== 'string') {
-                    console.error(`[Bot ${botId}] JID inválido ao tentar enviar mensagem de saída:`, participant);
-                    continue;
-                }
+                if (!jid || typeof jid !== 'string') continue;
                 
-                const msg = currentBot.groupExitMsg || "Olá, notamos que você saiu do grupo. Algum motivo especial? Gostaríamos de saber seu feedback!";
-                console.log(`[Bot ${botId}] Enviando mensagem de saída privada para ${jid}`);
+                const norm = jid.split('@')[0];
+                const rawTemplate = groupConfig.exitMessage || currentBot.groupExitMsg || `@user saiu do grupo.`;
+                const finalMsg = rawTemplate.replace(/@user/g, `@${norm}`);
                 try {
-                    await sock.sendMessage(jid, { text: msg });
+                    await sock.sendMessage(id, { text: finalMsg });
                 } catch (err) {
-                    console.error(`[Bot ${botId}] Erro ao enviar mensagem privada para ${jid}:`, err);
+                    console.error(`[Bot ${botId}] Erro ao enviar mensagem de saída:`, err);
                 }
             }
         }
@@ -460,7 +467,9 @@ async function startBot(botId: string) {
             botId,
             currentBot,
             senderJid: msg.key.participant || jid,
+            groupId: isGroup ? jid : undefined,
             text,
+            messageObj: msg.message,
             firestoreDb,
             isGroup,
             onResetBot: async (targetBotId: string) => {
@@ -470,6 +479,26 @@ async function startBot(botId: string) {
 
         if (adminResult.handled) {
             return;
+        }
+
+        // Executa Moderação Determinística em Grupos
+        if (isGroup) {
+            const senderJid = msg.key.participant || jid;
+            const modResult = await processGroupModeration({
+                sock,
+                botId,
+                currentBot,
+                groupId: jid,
+                senderJid,
+                messageKey: msg.key,
+                rawText: text,
+                messageObj: msg.message,
+                firestoreDb
+            });
+
+            if (modResult.blocked || !modResult.shouldProceedToAI) {
+                return;
+            }
         }
 
         // Check for media
@@ -931,6 +960,322 @@ app.get('/api/bot/:id/audit-logs', requireBotAuth, async (req, res) => {
     }
 });
 
+// ==========================================
+// GESTÃO AVANÇADA DE GRUPOS WHATSAPP (API)
+// ==========================================
+
+// 1. Listar todos os grupos em que o bot participa
+app.get('/api/bot/:id/groups', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.GROUP_MANAGE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para visualizar grupos.' });
+        }
+
+        const sock = activeSocks.get(botId);
+        const groupList: any[] = [];
+        const seenGroupIds = new Set<string>();
+
+        // Tenta obter grupos em tempo real via Baileys
+        if (sock && connectionStatuses.get(botId) === 'Conectado') {
+            try {
+                const participating = await sock.groupFetchAllParticipating();
+                const botJid = sock.user?.id ? sock.user.id.split(':')[0] : '';
+
+                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
+                    seenGroupIds.add(gId);
+                    const participants = gMeta.participants || [];
+                    const botParticipant = participants.find((p: any) => {
+                        const pId = p.id || p.jid || '';
+                        return botJid && pId.includes(botJid);
+                    });
+                    const botIsAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
+
+                    // Carrega ou inicializa config no Firestore
+                    const config = await getGroupConfig(firestoreDb, botId, gId, gMeta.subject);
+
+                    groupList.push({
+                        groupId: gId,
+                        groupName: gMeta.subject || config.groupName || 'Grupo WhatsApp',
+                        groupDesc: gMeta.desc?.toString() || config.groupDesc || '',
+                        participantCount: participants.length,
+                        botIsAdmin,
+                        config
+                    });
+                }
+            } catch (sockErr) {
+                console.warn(`[Bot ${botId}] Erro ao buscar grupos via Baileys, usando Firestore:`, sockErr);
+            }
+        }
+
+        // Se o Baileys estiver offline ou não retornar todos, mescla com os grupos salvos no Firestore
+        const savedGroupsSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
+        for (const docSnap of savedGroupsSnap.docs) {
+            const gId = docSnap.id;
+            if (!seenGroupIds.has(gId)) {
+                const config = docSnap.data() as GroupConfig;
+                groupList.push({
+                    groupId: gId,
+                    groupName: config.groupName || 'Grupo WhatsApp',
+                    groupDesc: config.groupDesc || '',
+                    participantCount: config.participantCount || 0,
+                    botIsAdmin: config.botIsAdmin || false,
+                    config
+                });
+            }
+        }
+
+        res.json(groupList);
+    } catch (err: any) {
+        console.error("Erro ao listar grupos do bot:", err);
+        res.status(500).json({ error: "Erro ao listar grupos: " + err.message });
+    }
+});
+
+// 2. Obter detalhes e configuração de um grupo específico
+app.get('/api/bot/:id/groups/:groupId', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const groupId = req.params.groupId;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.GROUP_MANAGE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para visualizar este grupo.' });
+        }
+
+        const sock = activeSocks.get(botId);
+        let meta = null;
+        if (sock) {
+            meta = await getGroupMeta(sock, groupId);
+        }
+
+        const config = await getGroupConfig(firestoreDb, botId, groupId, meta?.subject);
+
+        // Contagem de advertências ativas
+        const warnSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings'));
+        const activeWarnings = warnSnap.docs.filter(d => (d.data().count || 0) > 0).length;
+
+        // Logs recentes
+        const logsRef = collection(firestoreDb, 'bots', botId, 'groups', groupId, 'logs');
+        const logsQuery = query(logsRef, orderBy('timestamp', 'desc'), limit(15));
+        const logsSnap = await getDocs(logsQuery);
+        const recentLogs = logsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+        res.json({
+            groupId,
+            groupName: meta?.subject || config.groupName,
+            groupDesc: meta?.desc || config.groupDesc || '',
+            participantCount: meta?.size || config.participantCount || 0,
+            botIsAdmin: meta?.botIsAdmin || false,
+            config,
+            activeWarnings,
+            recentLogs
+        });
+    } catch (err: any) {
+        console.error("Erro ao obter grupo:", err);
+        res.status(500).json({ error: "Erro ao obter grupo: " + err.message });
+    }
+});
+
+// 3. Atualizar configuração de um grupo
+app.post('/api/bot/:id/groups/:groupId', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const groupId = req.params.groupId;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.GROUP_MANAGE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para alterar configurações do grupo.' });
+        }
+
+        const groupRef = doc(firestoreDb, 'bots', botId, 'groups', groupId);
+        const incoming = req.body;
+
+        const updatedConfig: Partial<GroupConfig> = {
+            ...incoming,
+            botId,
+            groupId,
+            updatedAt: serverTimestamp()
+        };
+
+        await setDoc(groupRef, updatedConfig, { merge: true });
+
+        // Atualiza agendador de motivação diária
+        const fullConfig = await getGroupConfig(firestoreDb, botId, groupId);
+        scheduleGroupMotivation({
+            botId,
+            groupConfig: fullConfig,
+            getActiveSock: (id) => activeSocks.get(id),
+            firestoreDb,
+            geminiKeys: currentBot.geminiKeys
+        });
+
+        await recordGroupLog(firestoreDb, {
+            botId,
+            groupId,
+            groupName: fullConfig.groupName,
+            action: 'CONFIG_UPDATED',
+            actor: authRole === 'ADMIN' ? 'ADMIN_WEB' : 'CLIENT_WEB',
+            details: 'Configurações de moderação e automação do grupo salvas via painel web.'
+        });
+
+        res.json({ status: "Configuração do grupo atualizada com sucesso!", config: fullConfig });
+    } catch (err: any) {
+        console.error("Erro ao atualizar config do grupo:", err);
+        res.status(500).json({ error: "Erro ao atualizar grupo: " + err.message });
+    }
+});
+
+// 4. Listar membros com advertências em um grupo
+app.get('/api/bot/:id/groups/:groupId/warnings', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const groupId = req.params.groupId;
+
+        const warnSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings'));
+        const warnings = warnSnap.docs
+            .map(d => ({ id: d.id, ...d.data() }))
+            .filter((w: any) => (w.count || 0) > 0);
+
+        res.json(warnings);
+    } catch (err: any) {
+        res.status(500).json({ error: "Erro ao buscar advertências: " + err.message });
+    }
+});
+
+// 5. Zerar advertências de membro ou grupo
+app.post('/api/bot/:id/groups/:groupId/warnings/reset', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const groupId = req.params.groupId;
+        const { participantPhone } = req.body;
+
+        if (participantPhone) {
+            const cleanPhone = normalizePhone(participantPhone);
+            await setDoc(doc(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings', cleanPhone), {
+                count: 0,
+                reasons: [],
+                lastWarningAt: new Date().toISOString()
+            }, { merge: true });
+        } else {
+            // Zera todos
+            const warnSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings'));
+            const batch = writeBatch(firestoreDb);
+            warnSnap.docs.forEach(d => batch.delete(d.ref));
+            await batch.commit();
+        }
+
+        await recordGroupLog(firestoreDb, {
+            botId,
+            groupId,
+            action: 'WARNINGS_CLEARED',
+            actor: 'WEB_PANEL',
+            targetUser: participantPhone || 'ALL',
+            details: participantPhone ? `Advertências de ${participantPhone} zeradas.` : 'Todas as advertências do grupo foram zeradas.'
+        });
+
+        res.json({ status: "Advertências zeradas com sucesso!" });
+    } catch (err: any) {
+        res.status(500).json({ error: "Erro ao zerar advertências: " + err.message });
+    }
+});
+
+// 6. Logs de moderação do grupo
+app.get('/api/bot/:id/groups/:groupId/logs', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const groupId = req.params.groupId;
+
+        const logsRef = collection(firestoreDb, 'bots', botId, 'groups', groupId, 'logs');
+        const q = query(logsRef, orderBy('timestamp', 'desc'), limit(50));
+        const snap = await getDocs(q);
+        const logs = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+
+        res.json(logs);
+    } catch (err: any) {
+        res.status(500).json({ error: "Erro ao buscar logs do grupo: " + err.message });
+    }
+});
+
+// 7. Teste de envio de Mensagem Diária Motivacional
+app.post('/api/bot/:id/groups/:groupId/test-motivation', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const groupId = req.params.groupId;
+        const currentBot = (req as any).bot;
+
+        const sock = activeSocks.get(botId);
+        if (!sock) {
+            return res.status(400).json({ error: "O bot precisa estar conectado ao WhatsApp para enviar mensagem de teste." });
+        }
+
+        const result = await sendDailyMotivationToGroup({
+            botId,
+            groupId,
+            sock,
+            firestoreDb,
+            geminiKeys: currentBot.geminiKeys,
+            isTest: true
+        });
+
+        res.json({ status: "Mensagem motivacional enviada com sucesso ao grupo!", details: result.messageText });
+    } catch (err: any) {
+        console.error("Erro ao enviar mensagem de teste:", err);
+        res.status(500).json({ error: "Erro ao enviar teste: " + err.message });
+    }
+});
+
+// 8. Executar ação de administração manual (ex: expulsar membro)
+app.post('/api/bot/:id/groups/:groupId/action', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const groupId = req.params.groupId;
+        const { action, participantJid } = req.body;
+        const currentBot = (req as any).bot;
+
+        const sock = activeSocks.get(botId);
+        if (!sock) {
+            return res.status(400).json({ error: "O bot está desconectado do WhatsApp." });
+        }
+
+        if (action === 'kick' && participantJid) {
+            const meta = await getGroupMeta(sock, groupId);
+            const targetPhone = normalizePhone(participantJid);
+            const botPhone = sock.user?.id ? normalizePhone(sock.user.id) : '';
+            const ownerPhone = normalizePhone(currentBot.ownerPhone || currentBot.ownerNumber);
+
+            if (meta?.admins.has(participantJid) || isPhoneMatch(targetPhone, ownerPhone) || isPhoneMatch(targetPhone, botPhone)) {
+                return res.status(400).json({ error: "Ação bloqueada: Não é permitido remover administradores, o dono ou o próprio bot." });
+            }
+
+            if (!meta?.botIsAdmin) {
+                return res.status(400).json({ error: "O bot precisa ser administrador do grupo no WhatsApp para remover membros." });
+            }
+
+            await sock.groupParticipantsUpdate(groupId, [participantJid], 'remove');
+            await recordGroupLog(firestoreDb, {
+                botId,
+                groupId,
+                action: 'MEMBER_REMOVED_MANUAL_PANEL',
+                actor: 'WEB_PANEL',
+                targetUser: targetPhone,
+                details: `Remoção do membro ${targetPhone} executada via Painel Web`
+            });
+
+            return res.json({ status: `Membro @${targetPhone} removido com sucesso do grupo.` });
+        }
+
+        res.status(400).json({ error: "Ação não suportada ou parâmetros inválidos." });
+    } catch (err: any) {
+        res.status(500).json({ error: "Erro ao executar ação: " + err.message });
+    }
+});
+
 // Reset Session (Protected)
 app.post('/api/bot/:id/reset', requireBotAuth, async (req, res) => {
     try {
@@ -1032,706 +1377,163 @@ initBots();
 // Rota de Health Check
 app.get('/health', (req, res) => res.send("TechStar Bot is Alive 24h"));
 
-// Serve Frontend
-app.get('/', (req, res) => {
-    res.send(`
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TechStar Multi-Bot Admin</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Fira Code', monospace; }
-        .hacker-border { border: 1px solid #00ff00; box-shadow: 0 0 10px #00ff00; }
-        .hacker-text { color: #00ff00; text-shadow: 0 0 5px #00ff00; }
-        .hacker-bg { background-color: #0a0a0a; }
-        .hacker-input { background: #1a1a1a; border: 1px solid #333; color: #00ff00; }
-        .hacker-input:focus { border-color: #00ff00; outline: none; }
-    </style>
-</head>
-<body class="hacker-bg text-gray-300 min-h-screen p-4 md:p-8">
-    <div class="max-w-6xl mx-auto">
-        <header class="mb-8 flex justify-between items-center border-b border-gray-800 pb-4">
-            <div>
-                <h1 class="text-3xl font-bold hacker-text">TECHSTAR_SAAS_v2.0</h1>
-                <p class="text-[10px] text-gray-500 mt-1 uppercase tracking-widest">Painel de Controle Multi-Instância</p>
-            </div>
-            <button onclick="openCreateModal()" class="bg-green-900 hover:bg-green-700 text-white px-4 py-2 rounded border border-green-400 text-sm">
-                + NOVO_BOT
-            </button>
-        </header>
+// API: Estatísticas Consolidadas do Admin
+app.get('/api/admin/stats', async (req, res) => {
+    try {
+        const q = query(collection(firestoreDb, 'bots'), orderBy('createdAt', 'desc'));
+        const snapshot = await getDocs(q);
+        const bots = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
 
-        <div id="bots-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-            <!-- Bots will be listed here -->
-        </div>
+        let totalMessages = 0;
+        const uniqueContacts = new Set();
+        const botStatsList = [];
 
-        <footer class="mt-12 text-center text-gray-600 text-xs">
-            &copy; 2024 TECHSTAR INDUSTRIES - MULTI-BOT SYSTEM
-        </footer>
-    </div>
-
-    <!-- Create Bot Modal -->
-    <div id="create-modal" class="fixed inset-0 bg-black/90 hidden flex items-center justify-center p-4 z-50">
-        <div class="bg-[#0a0a0a] border border-green-500 p-6 rounded-lg max-w-md w-full">
-            <h2 class="text-xl hacker-text underline mb-4">CRIAR_NOVO_BOT</h2>
-            <div class="space-y-4">
-                <div>
-                    <label class="block text-xs uppercase mb-1 hacker-text">Nome do Bot</label>
-                    <input id="newBotName" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Ex: Atendimento Tech">
-                </div>
-                <div class="flex gap-4">
-                    <button onclick="confirmCreateBot()" class="flex-1 bg-green-900 hover:bg-green-700 text-white font-bold py-2 rounded border border-green-400">
-                        CRIAR
-                    </button>
-                    <button onclick="closeCreateModal()" class="flex-1 bg-gray-900 hover:bg-gray-800 text-gray-400 py-2 rounded border border-gray-700">
-                        CANCELAR
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Bot Config Modal -->
-    <div id="bot-modal" class="fixed inset-0 bg-black/90 hidden flex items-center justify-center p-4 z-50">
-        <div class="bg-[#0a0a0a] border border-green-500 p-6 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
-            <div class="flex justify-between items-center mb-6">
-                <h2 id="modal-title" class="text-xl hacker-text underline">CONFIGURAR_BOT</h2>
-                <button onclick="closeModal()" class="text-red-500 hover:text-red-400">FECHAR [X]</button>
-            </div>
+        for (const bot of bots) {
+            const status = connectionStatuses.get(bot.id) || "Desconectado";
+            const botRef = doc(firestoreDb, 'bots', bot.id);
+            const historySnap = await getDocs(collection(botRef, 'history'));
+            const botMsgCount = historySnap.size;
+            totalMessages += botMsgCount;
             
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Nome do Bot</label>
-                        <input id="botName" type="text" class="w-full hacker-input p-2 rounded text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">System Prompt</label>
-                        <textarea id="botPrompt" rows="4" class="w-full hacker-input p-2 rounded text-sm"></textarea>
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Gemini Keys (Separadas por vírgula)</label>
-                        <textarea id="botKeys" rows="2" class="w-full hacker-input p-2 rounded text-sm"></textarea>
-                    </div>
-                </div>
-                <div class="flex flex-col items-center justify-center border border-dashed border-gray-700 rounded p-4">
-                    <h3 class="text-xs hacker-text mb-4 uppercase">WhatsApp QR Code</h3>
-                    <div id="modal-qr-container" class="w-48 h-48 bg-white flex items-center justify-center rounded">
-                        <p class="text-black text-[10px] text-center p-2">Aguardando...</p>
-                    </div>
-                    <p id="bot-status-text" class="mt-4 text-xs hacker-text uppercase">Status: Desconectado</p>
-                </div>
-            </div>
-
-            <div class="mt-6 space-y-4">
-                <div>
-                    <label class="block text-xs uppercase mb-1 hacker-text">Base de Conhecimento</label>
-                    <textarea id="botKnowledge" rows="4" class="w-full hacker-input p-2 rounded text-sm"></textarea>
-                </div>
-                
-                <div class="grid grid-cols-2 gap-4">
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Nome do Proprietário</label>
-                        <input id="botOwnerName" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Ex: João">
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1 hacker-text">Número do Proprietário</label>
-                        <input id="botOwnerNumber" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Ex: 5511999999999">
-                    </div>
-                </div>
-
-                <div class="grid grid-cols-2 gap-4">
-                    <div class="flex items-center justify-between hacker-border p-2 rounded">
-                        <label class="text-[10px] uppercase hacker-text">Responder em Privado</label>
-                        <input id="respondInPrivate" type="checkbox" class="w-4 h-4 accent-green-500">
-                    </div>
-                    <div class="flex items-center justify-between hacker-border p-2 rounded">
-                        <label class="text-[10px] uppercase hacker-text">Responder em Grupos</label>
-                        <input id="respondInGroups" type="checkbox" class="w-4 h-4 accent-green-500">
-                    </div>
-                </div>
-
-                <div class="hacker-border p-4 rounded-lg bg-black/50 space-y-4">
-                    <h3 class="text-xs hacker-text underline uppercase">Recursos Avançados</h3>
-                    <div class="flex items-center justify-between">
-                        <div class="flex flex-col">
-                            <label class="text-xs uppercase hacker-text">Memória de Contexto</label>
-                            <p class="text-[8px] text-gray-500">Lembra conversas passadas para evitar repetições.</p>
-                        </div>
-                        <input id="memoryEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                    </div>
-                    
-                    <div class="border-t border-gray-800 pt-4">
-                        <div class="flex items-center justify-between mb-2">
-                            <div class="flex flex-col">
-                                <label class="text-xs uppercase hacker-text">Análise de Mídia (Imagem/PDF)</label>
-                                <p class="text-[8px] text-gray-500">Permite ao bot "ver" imagens e ler PDFs.</p>
-                            </div>
-                            <input id="analysisEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                        </div>
-                        <label class="block text-[10px] uppercase mb-1 hacker-text">Instruções de Análise</label>
-                        <textarea id="analysisInstructions" rows="3" class="w-full hacker-input p-2 rounded text-xs" placeholder="O que o bot deve procurar ou como deve analisar a mídia..."></textarea>
-                    </div>
-                </div>
-
-                <div class="hacker-border p-4 rounded-lg bg-black/50 space-y-4">
-                    <div class="flex items-center justify-between">
-                        <label class="text-xs uppercase hacker-text">Boas-vindas (Primeiro Contato)</label>
-                        <input id="privateWelcomeEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                    </div>
-                    <input id="botWelcome" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Mensagem de boas-vindas...">
-                    
-                    <div class="flex items-center justify-between mt-4">
-                        <label class="text-xs uppercase hacker-text">Mensagem de Saída (Comando !sair)</label>
-                        <input id="privateExitEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                    </div>
-                    <input id="botExit" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Mensagem de saída...">
-                </div>
-
-                <div class="hacker-border p-4 rounded-lg bg-black/50 space-y-4">
-                    <h3 class="text-xs hacker-text underline uppercase">Recursos de Grupo</h3>
-                    
-                    <div class="flex items-center justify-between">
-                        <label class="text-xs uppercase hacker-text">Boas-vindas em Grupos</label>
-                        <input id="groupWelcomeEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                    </div>
-                    <textarea id="groupWelcomeMsg" rows="2" class="w-full hacker-input p-2 rounded text-xs" placeholder="Mensagem ao entrar no grupo..."></textarea>
-
-                    <div class="flex items-center justify-between mt-4">
-                        <label class="text-xs uppercase hacker-text">Mensagem ao Sair (Privado)</label>
-                        <input id="groupExitEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                    </div>
-                    <textarea id="groupExitMsg" rows="2" class="w-full hacker-input p-2 rounded text-xs" placeholder="Mensagem enviada no privado ao sair..."></textarea>
-                </div>
-
-                <button onclick="saveBotConfig()" class="w-full bg-green-900 hover:bg-green-700 text-white font-bold py-3 rounded border border-green-400">
-                    SALVAR_CONFIGURAÇÕES
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        let currentBotId = null;
-        let qrInterval = null;
-
-        function openCreateModal() {
-            document.getElementById('create-modal').classList.remove('hidden');
-            document.getElementById('newBotName').focus();
-        }
-
-        function closeCreateModal() {
-            document.getElementById('create-modal').classList.add('hidden');
-            document.getElementById('newBotName').value = '';
-        }
-
-        async function confirmCreateBot() {
-            const name = document.getElementById('newBotName').value;
-            if (!name) return;
-            await fetch('/api/admin/bots', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name })
+            const botContacts = new Set();
+            historySnap.docs.forEach(d => {
+                const jid = d.data().jid;
+                if (jid) {
+                    uniqueContacts.add(jid);
+                    botContacts.add(jid);
+                }
             });
-            closeCreateModal();
-            fetchBots();
-        }
 
-        async function fetchBots() {
-            try {
-                const res = await fetch('/api/admin/bots');
-                if (!res.ok) return;
-                const bots = await res.json();
-                const grid = document.getElementById('bots-grid');
-                grid.innerHTML = '';
-
-                bots.forEach(bot => {
-                    const card = document.createElement('div');
-                    card.className = 'hacker-border p-6 rounded-lg bg-black flex flex-col justify-between';
-                    card.innerHTML = \`
-                        <div>
-                            <div class="flex justify-between items-start mb-4">
-                                <h3 class="text-lg font-bold hacker-text truncate">\${bot.name}</h3>
-                                <span class="text-[10px] px-2 py-0.5 rounded border \${bot.active ? 'border-green-500 text-green-500' : 'border-red-500 text-red-500'} uppercase">
-                                    \${bot.active ? 'Ativo' : 'Inativo'}
-                                </span>
-                            </div>
-                            <p class="text-xs text-gray-500 mb-4">ID: \${bot.id}</p>
-                            <div class="space-y-1 mb-6">
-                                <p class="text-[10px] uppercase text-gray-400">Status: <span class="\${bot.status === 'Conectado' ? 'text-green-500' : 'text-yellow-500'}">\${bot.status}</span></p>
-                            </div>
-                        </div>
-                        <div class="space-y-2">
-                            <button onclick="openBot('\${bot.id}')" class="w-full bg-gray-900 hover:bg-gray-800 text-xs py-2 rounded border border-gray-700">GERENCIAR</button>
-                            <button onclick="toggleBot('\${bot.id}')" class="w-full \${bot.active ? 'bg-red-900/20 text-red-500 border-red-900' : 'bg-green-900/20 text-green-500 border-green-900'} text-xs py-2 rounded border">
-                                \${bot.active ? 'DESATIVAR' : 'ATIVAR'}
-                            </button>
-                            <button onclick="resetBot('\${bot.id}')" class="w-full bg-orange-900/20 text-orange-500 border-orange-900 text-[10px] py-1 rounded border">RESETAR SESSÃO</button>
-                            <button onclick="copyLink('\${bot.id}', '\${bot.accessToken || \'\'}')" class="w-full bg-blue-900/20 text-blue-400 border-blue-900 text-xs py-2 rounded border">COPIAR LINK ACESSO</button>
-                            <button onclick="regenerateToken('\${bot.id}')" class="w-full bg-yellow-900/20 text-yellow-400 border-yellow-900 text-[10px] py-1 rounded border">REVOGAR / REGERAR TOKEN</button>
-                            <button onclick="deleteBot('\${bot.id}')" class="w-full bg-red-900/40 text-red-400 border-red-900 text-[10px] py-1 rounded border hover:bg-red-900/60 mt-2">APAGAR BOT</button>
-                        </div>
-                    \`;
-                    grid.appendChild(card);
-                });
-            } catch (e) {
-                console.error("Erro ao buscar bots:", e);
-            }
-        }
-
-        async function toggleBot(id) {
-            await fetch('/api/admin/bots/' + id + '/toggle', { method: 'POST' });
-            fetchBots();
-        }
-
-        async function resetBot(id) {
-            if (!confirm("Isso irá desconectar o WhatsApp e gerar um novo QR Code. Continuar?")) return;
-            await fetch('/api/bot/' + id + '/reset', { 
-                method: 'POST',
-                headers: { 'x-requested-by': 'techstar-admin' }
+            botStatsList.push({
+                botId: bot.id,
+                name: (bot as any).name || 'Bot sem nome',
+                status,
+                messagesCount: botMsgCount,
+                contactsCount: botContacts.size
             });
-            alert("Sessão resetada! Aguarde alguns segundos pelo novo QR Code.");
-            fetchBots();
         }
 
-        async function deleteBot(id) {
-            if (!confirm("TEM CERTEZA? Isso apagará o bot e todo o histórico permanentemente!")) return;
-            const res = await fetch('/api/admin/bots/' + id, { method: 'DELETE' });
-            if (res.ok) {
-                fetchBots();
-            } else {
-                const data = await res.json();
-                alert("Erro ao apagar bot: " + (data.error || "Erro desconhecido"));
-            }
+        const onlineCount = bots.filter(b => connectionStatuses.get(b.id) === 'Conectado').length;
+
+        // Buscar logs recentes de auditoria de todos os bots
+        const recentLogs: any[] = [];
+        for (const bot of bots.slice(0, 5)) {
+            const logs = await fetchAuditLogs(firestoreDb, bot.id, 5);
+            recentLogs.push(...logs);
         }
+        recentLogs.sort((a, b) => (new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()));
 
-        function copyLink(id, token) {
-            const url = window.location.origin + '/manage/' + id + '?token=' + encodeURIComponent(token || '');
-            navigator.clipboard.writeText(url);
-            alert("Link de gerenciamento copiado com token seguro!");
-        }
-
-        async function regenerateToken(id) {
-            if (!confirm("Isso irá invalidar o link anterior do cliente e gerar uma nova credencial de acesso. Continuar?")) return;
-            const res = await fetch('/api/admin/bots/' + id + '/regenerate-token', { method: 'POST' });
-            if (res.ok) {
-                alert("Token revogado e regenerado com sucesso!");
-                fetchBots();
-            } else {
-                alert("Erro ao regenerar token.");
-            }
-        }
-
-        async function openBot(id) {
-            currentBotId = id;
-            const res = await fetch('/api/bot/' + id + '/config', {
-                headers: { 'x-requested-by': 'techstar-admin' }
-            });
-            const bot = await res.json();
-
-            document.getElementById('botName').value = bot.name;
-            document.getElementById('botPrompt').value = bot.systemPrompt;
-            document.getElementById('botWelcome').value = bot.welcomeMsg;
-            document.getElementById('botExit').value = bot.exitMsg;
-            document.getElementById('botKnowledge').value = bot.knowledgeBase || "";
-            document.getElementById('botKeys').value = bot.geminiKeys || "";
-            document.getElementById('botOwnerName').value = bot.ownerName || "";
-            document.getElementById('botOwnerNumber').value = bot.ownerPhone || bot.ownerNumber || "";
-            
-            document.getElementById('respondInPrivate').checked = bot.respondInPrivate === 1;
-            document.getElementById('respondInGroups').checked = bot.respondInGroups === 1;
-            document.getElementById('privateWelcomeEnabled').checked = bot.privateWelcomeEnabled === 1;
-            document.getElementById('privateExitEnabled').checked = bot.privateExitEnabled === 1;
-            
-            document.getElementById('groupWelcomeEnabled').checked = bot.groupWelcomeEnabled === 1;
-            document.getElementById('groupWelcomeMsg').value = bot.groupWelcomeMsg || "";
-            document.getElementById('groupExitEnabled').checked = bot.groupExitEnabled === 1;
-            document.getElementById('groupExitMsg').value = bot.groupExitMsg || "";
-            
-            document.getElementById('memoryEnabled').checked = bot.memoryEnabled === 1;
-            document.getElementById('analysisEnabled').checked = bot.analysisEnabled === 1;
-            document.getElementById('analysisInstructions').value = bot.analysisInstructions || "";
-            
-            document.getElementById('bot-modal').classList.remove('hidden');
-            
-            if (qrInterval) clearInterval(qrInterval);
-            qrInterval = setInterval(updateQR, 3000);
-            updateQR();
-        }
-
-        async function updateQR() {
-            if (!currentBotId) return;
-            const res = await fetch('/api/bot/' + currentBotId + '/config', {
-                headers: { 'x-requested-by': 'techstar-admin' }
-            });
-            const bot = await res.json();
-            
-            const container = document.getElementById('modal-qr-container');
-            const statusText = document.getElementById('bot-status-text');
-            
-            statusText.innerText = 'Status: ' + bot.status;
-            
-            if (bot.status === 'Conectado') {
-                container.innerHTML = '<p class="text-green-600 font-bold text-center">BOT_CONECTADO</p>';
-                statusText.className = 'mt-4 text-xs text-green-500 uppercase';
-            } else if (bot.qr) {
-                container.innerHTML = '<img src="' + bot.qr + '" class="w-full h-full p-2">';
-            } else {
-                container.innerHTML = '<p class="text-black text-[10px] text-center p-2">Aguardando QR...</p>';
-            }
-        }
-
-        function closeModal() {
-            document.getElementById('bot-modal').classList.add('hidden');
-            currentBotId = null;
-            if (qrInterval) clearInterval(qrInterval);
-        }
-
-        async function saveBotConfig() {
-            const body = {
-                name: document.getElementById('botName').value,
-                systemPrompt: document.getElementById('botPrompt').value,
-                welcomeMsg: document.getElementById('botWelcome').value,
-                exitMsg: document.getElementById('botExit').value,
-                knowledgeBase: document.getElementById('botKnowledge').value,
-                geminiKeys: document.getElementById('botKeys').value,
-                ownerName: document.getElementById('botOwnerName').value,
-                ownerNumber: document.getElementById('botOwnerNumber').value,
-                respondInPrivate: document.getElementById('respondInPrivate').checked,
-                respondInGroups: document.getElementById('respondInGroups').checked,
-                privateWelcomeEnabled: document.getElementById('privateWelcomeEnabled').checked,
-                privateExitEnabled: document.getElementById('privateExitEnabled').checked,
-                groupWelcomeEnabled: document.getElementById('groupWelcomeEnabled').checked,
-                groupWelcomeMsg: document.getElementById('groupWelcomeMsg').value,
-                groupExitEnabled: document.getElementById('groupExitEnabled').checked,
-                groupExitMsg: document.getElementById('groupExitMsg').value,
-                memoryEnabled: document.getElementById('memoryEnabled').checked,
-                analysisEnabled: document.getElementById('analysisEnabled').checked,
-                analysisInstructions: document.getElementById('analysisInstructions').value
-            };
-            await fetch('/api/bot/' + currentBotId + '/config', {
-                method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'x-requested-by': 'techstar-admin'
-                },
-                body: JSON.stringify(body)
-            });
-            alert("Configuração salva!");
-            fetchBots();
-        }
-
-        setInterval(fetchBots, 10000);
-        fetchBots();
-    </script>
-</body>
-</html>
-    `);
+        res.json({
+            totalBots: bots.length,
+            onlineBots: onlineCount,
+            offlineBots: bots.length - onlineCount,
+            totalMessages,
+            totalUsers: uniqueContacts.size,
+            botStats: botStatsList,
+            recentActivity: recentLogs.slice(0, 10)
+        });
+    } catch (e) {
+        console.error("Erro ao carregar estatísticas do admin:", e);
+        res.status(500).json({ error: "Erro ao carregar estatísticas" });
+    }
 });
 
-// Client Management Page (Protected with token validation & Multi-Tenant isolation)
-app.get('/manage/:id', async (req, res) => {
-    const botId = req.params.id;
-    const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
-    const bot = botDoc.data();
-    if (!bot) return res.status(404).send("Bot não encontrado");
+// API: Estatísticas Específicas do Bot
+app.get('/api/bot/:id/stats', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const botRef = doc(firestoreDb, 'bots', botId);
+        const historySnap = await getDocs(collection(botRef, 'history'));
+        const messages = historySnap.docs.map(d => d.data());
+        
+        const contacts = new Set<string>();
+        let userMessages = 0;
+        let modelMessages = 0;
 
-    // Ensure bot has an access token
-    if (!bot.accessToken) {
-        bot.accessToken = generateSecureToken();
-        await updateDoc(doc(firestoreDb, 'bots', botId), { accessToken: bot.accessToken });
-    }
-
-    const token = (req.query.token as string) || (req.headers['x-bot-token'] as string);
-    const isAdmin = req.query.admin_key === (process.env.ADMIN_KEY || 'techstar_master_2024');
-
-    // Strict multi-tenant verification: Reject if token is missing or mismatched
-    if (!isAdmin && (!token || token !== bot.accessToken)) {
-        await recordAuditLog(firestoreDb, {
-            botId,
-            role: 'USER',
-            action: 'UNAUTHORIZED_MANAGE_ACCESS',
-            result: 'DENIED',
-            details: `Acesso negado à página /manage/${botId}. Token ausente ou inválido.`
+        messages.forEach(m => {
+            if (m.jid) contacts.add(m.jid);
+            if (m.role === 'user') userMessages++;
+            else if (m.role === 'model') modelMessages++;
         });
 
-        return res.status(403).send(`
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <title>403 - Acesso Negado</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <style>body { font-family: 'Fira Code', monospace; background-color: #0a0a0a; color: #ff3333; }</style>
-</head>
-<body class="min-h-screen flex items-center justify-center p-4">
-    <div class="max-w-md w-full border border-red-500/50 p-8 rounded-lg bg-black text-center space-y-4 shadow-[0_0_20px_rgba(255,0,0,0.3)]">
-        <h1 class="text-3xl font-bold text-red-500">403_ACESSO_NEGADO</h1>
-        <p class="text-sm text-gray-300">Esta instância é privada e protegida por arquitetura Multi-Tenant.</p>
-        <p class="text-xs text-gray-500">Para gerenciar esta instância, utilize o link de acesso seguro com token fornecido pelo administrador da plataforma.</p>
-        <div class="pt-4 border-t border-gray-800">
-            <a href="/" class="text-xs text-green-500 hover:underline">Ir para o painel principal</a>
-        </div>
-    </div>
-</body>
-</html>
-        `);
+        res.json({
+            totalMessages: messages.length,
+            userMessages,
+            modelMessages,
+            totalContacts: contacts.size,
+            memoryItems: messages.length
+        });
+    } catch (e) {
+        console.error("Erro ao buscar estatísticas do bot:", e);
+        res.status(500).json({ error: "Erro ao buscar estatísticas" });
     }
+});
 
-    res.send(`
-<!DOCTYPE html>
-<html lang="pt-br">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gerenciar Bot: ${bot.name}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&display=swap" rel="stylesheet">
-    <style>
-        body { font-family: 'Fira Code', monospace; background-color: #0a0a0a; color: #00ff00; }
-        .hacker-border { border: 1px solid #00ff00; box-shadow: 0 0 10px #00ff00; }
-        .hacker-input { background: #1a1a1a; border: 1px solid #333; color: #00ff00; }
-    </style>
-</head>
-<body class="p-4 md:p-8">
-    <div class="max-w-3xl mx-auto space-y-8">
-        <div class="flex justify-between items-center border-b border-gray-800 pb-4">
-            <div>
-                <h1 class="text-2xl font-bold underline uppercase tracking-widest">GERENCIAMENTO_BOT: ${bot.name}</h1>
-                <p class="text-xs text-gray-500 mt-1">INSTÂNCIA PRIVADA ISOLADA (MULTI-TENANT)</p>
-            </div>
-            <span class="text-xs px-2 py-1 rounded border border-green-500 text-green-400">SESSÃO_AUTENTICADA</span>
-        </div>
+// API: Listagem de Memória de Contexto (Histórico)
+app.get('/api/bot/:id/memory', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const botRef = doc(firestoreDb, 'bots', botId);
+        const historySnap = await getDocs(query(collection(botRef, 'history'), orderBy('timestamp', 'desc'), limit(200)));
         
-        <div class="grid grid-cols-1 gap-8">
-            <section class="hacker-border p-6 rounded-lg bg-black">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl underline">CONEXÃO_WHATSAPP</h2>
-                    <button onclick="resetSession()" class="text-xs bg-orange-900/40 text-orange-400 border border-orange-500 px-3 py-1 rounded hover:bg-orange-800/60">
-                        RECONECTAR / NOVO QR
-                    </button>
-                </div>
-                <div id="qr-container" class="w-64 h-64 bg-white mx-auto flex items-center justify-center rounded mb-4">
-                    <p class="text-black text-xs text-center">Carregando...</p>
-                </div>
-                <p id="status-text" class="text-center text-sm font-bold">STATUS: VERIFICANDO...</p>
-            </section>
+        const contactsMap = new Map<string, { jid: string; messageCount: number; lastMessage: string; lastTimestamp: any }>();
 
-            <section class="hacker-border p-6 rounded-lg bg-black">
-                <h2 class="text-xl mb-4 underline">CONFIGURAÇÕES_DO_BOT</h2>
-                <div class="space-y-4">
-                    <div>
-                        <label class="block text-xs uppercase mb-1">Nome do Bot</label>
-                        <input id="botName" type="text" class="w-full hacker-input p-2 rounded text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1">Mensagem de Boas-vindas</label>
-                        <input id="welcome" type="text" class="w-full hacker-input p-2 rounded text-sm">
-                    </div>
-                    <div>
-                        <label class="block text-xs uppercase mb-1">Base de Conhecimento</label>
-                        <textarea id="knowledge" rows="4" class="w-full hacker-input p-2 rounded text-sm" placeholder="Instruções e dados que o bot deve usar para responder..."></textarea>
-                    </div>
+        historySnap.docs.forEach(d => {
+            const data = d.data();
+            const jid = data.jid || 'desconhecido';
+            const existing = contactsMap.get(jid);
+            const ts = data.timestamp ? ((data.timestamp as any).toDate ? (data.timestamp as any).toDate().toISOString() : data.timestamp) : new Date().toISOString();
 
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                            <label class="block text-xs uppercase mb-1">Nome do Proprietário</label>
-                            <input id="ownerName" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Ex: João Silva">
-                        </div>
-                        <div>
-                            <label class="block text-xs uppercase mb-1">Número WhatsApp do Proprietário (com DDI)</label>
-                            <input id="ownerNumber" type="text" class="w-full hacker-input p-2 rounded text-sm" placeholder="Ex: 5511999999999">
-                            <p class="text-[9px] text-gray-500 mt-0.5">Autoriza comandos administrativos pelo próprio WhatsApp</p>
-                        </div>
-                    </div>
+            if (!existing) {
+                contactsMap.set(jid, {
+                    jid,
+                    messageCount: 1,
+                    lastMessage: (data.text || '').substring(0, 80),
+                    lastTimestamp: ts
+                });
+            } else {
+                existing.messageCount++;
+            }
+        });
 
-                    <div class="hacker-border p-4 rounded bg-black/50 space-y-4">
-                        <h3 class="text-xs underline uppercase">Recursos Avançados</h3>
-                        <div class="flex items-center justify-between">
-                            <label class="text-[10px] uppercase">Memória de Contexto</label>
-                            <input id="memoryEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                        </div>
-                        
-                        <div class="border-t border-gray-800 pt-2">
-                            <div class="flex items-center justify-between mb-2">
-                                <label class="text-[10px] uppercase">Análise de Mídia (Imagem/PDF)</label>
-                                <input id="analysisEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                            </div>
-                            <label class="block text-[8px] uppercase mb-1">Instruções de Análise</label>
-                            <textarea id="analysisInstructions" rows="2" class="w-full hacker-input p-2 rounded text-[10px]" placeholder="O que o bot deve procurar..."></textarea>
-                        </div>
-                    </div>
+        res.json(Array.from(contactsMap.values()));
+    } catch (e) {
+        console.error("Erro ao buscar memória do bot:", e);
+        res.status(500).json({ error: "Erro ao buscar memória" });
+    }
+});
 
-                    <div class="hacker-border p-4 rounded bg-black/50 space-y-4">
-                        <h3 class="text-xs underline uppercase">Recursos de Grupo</h3>
-                        
-                        <div class="flex items-center justify-between">
-                            <label class="text-[10px] uppercase">Boas-vindas em Grupos</label>
-                            <input id="groupWelcomeEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                        </div>
-                        <textarea id="groupWelcomeMsg" rows="2" class="w-full hacker-input p-2 rounded text-[10px]" placeholder="Mensagem ao entrar no grupo..."></textarea>
+// API: Limpeza de Memória de Contexto
+app.post('/api/bot/:id/memory/clear', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
 
-                        <div class="flex items-center justify-between mt-2">
-                            <label class="text-[10px] uppercase">Mensagem ao Sair (Privado)</label>
-                            <input id="groupExitEnabled" type="checkbox" class="w-4 h-4 accent-green-500">
-                        </div>
-                        <textarea id="groupExitMsg" rows="2" class="w-full hacker-input p-2 rounded text-[10px]" placeholder="Mensagem enviada no privado ao sair..."></textarea>
-                    </div>
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.MEMORY_MANAGE)) {
+            return res.status(403).json({ error: "Permissão insuficiente para limpar a memória do bot." });
+        }
 
-                    <button onclick="save()" class="w-full bg-green-900 text-white py-3 rounded border border-green-400 font-bold hover:bg-green-800">
-                        SALVAR_ALTERAÇÕES
-                    </button>
-                </div>
-            </section>
-
-            <section class="hacker-border p-6 rounded-lg bg-black">
-                <div class="flex justify-between items-center mb-4">
-                    <h2 class="text-xl underline">AUDITORIA_E_COMANDOS_DO_BOT</h2>
-                    <button onclick="loadAuditLogs()" class="text-xs border border-green-500 px-3 py-1 rounded hover:bg-green-950">
-                        ATUALIZAR_LOGS
-                    </button>
-                </div>
-                <div id="audit-container" class="space-y-2 max-h-64 overflow-y-auto text-xs font-mono">
-                    <p class="text-gray-500">Carregando logs...</p>
-                </div>
-            </section>
-        </div>
-    </div>
-
-    <script>
-        const botId = "${req.params.id}";
-        const clientToken = "${token || bot.accessToken}";
+        const botRef = doc(firestoreDb, 'bots', botId);
+        const historySnap = await getDocs(collection(botRef, 'history'));
         
-        function getAuthUrl(endpoint) {
-            return endpoint + (endpoint.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(clientToken);
-        }
+        const batch = writeBatch(firestoreDb);
+        historySnap.docs.forEach(d => batch.delete(d.ref));
+        await batch.commit();
 
-        async function update() {
-            try {
-                const res = await fetch(getAuthUrl('/api/bot/' + botId + '/config'));
-                if (res.status === 403) {
-                    alert("Sessão expirada ou não autorizada.");
-                    return;
-                }
-                if (!res.ok) return;
-                const data = await res.json();
-                
-                const container = document.getElementById('qr-container');
-                const status = document.getElementById('status-text');
-                
-                status.innerText = 'STATUS: ' + (data.status || "DESCONHECIDO").toUpperCase();
-                
-                if (data.status === 'Conectado') {
-                    container.innerHTML = '<p class="text-green-600 font-bold text-center">CONECTADO_COM_SUCESSO</p>';
-                    status.className = 'text-center text-sm font-bold text-green-500';
-                } else if (data.qr) {
-                    container.innerHTML = '<img src="' + data.qr + '" class="w-full h-full p-2">';
-                }
-                
-                if (!document.getElementById('welcome').value && data.welcomeMsg) {
-                    document.getElementById('botName').value = data.name || "";
-                    document.getElementById('welcome').value = data.welcomeMsg;
-                    document.getElementById('knowledge').value = data.knowledgeBase || "";
-                    document.getElementById('ownerName').value = data.ownerName || "";
-                    document.getElementById('ownerNumber').value = data.ownerPhone || data.ownerNumber || "";
-                    
-                    document.getElementById('groupWelcomeEnabled').checked = data.groupWelcomeEnabled === 1;
-                    document.getElementById('groupWelcomeMsg').value = data.groupWelcomeMsg || "";
-                    document.getElementById('groupExitEnabled').checked = data.groupExitEnabled === 1;
-                    document.getElementById('groupExitMsg').value = data.groupExitMsg || "";
-                    
-                    document.getElementById('memoryEnabled').checked = data.memoryEnabled === 1;
-                    document.getElementById('analysisEnabled').checked = data.analysisEnabled === 1;
-                    document.getElementById('analysisInstructions').value = data.analysisInstructions || "";
-                }
-            } catch (e) {
-                console.error("Erro ao atualizar status:", e);
-            }
-        }
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            action: 'CLEAR_HISTORY',
+            result: 'SUCCESS',
+            details: `Toda a memória (${historySnap.size} mensagens) foi limpa pelo ${authRole}.`
+        });
 
-        async function save() {
-            const body = {
-                name: document.getElementById('botName').value,
-                welcomeMsg: document.getElementById('welcome').value,
-                knowledgeBase: document.getElementById('knowledge').value,
-                ownerName: document.getElementById('ownerName').value,
-                ownerNumber: document.getElementById('ownerNumber').value,
-                groupWelcomeEnabled: document.getElementById('groupWelcomeEnabled').checked,
-                groupWelcomeMsg: document.getElementById('groupWelcomeMsg').value,
-                groupExitEnabled: document.getElementById('groupExitEnabled').checked,
-                groupExitMsg: document.getElementById('groupExitMsg').value,
-                memoryEnabled: document.getElementById('memoryEnabled').checked,
-                analysisEnabled: document.getElementById('analysisEnabled').checked,
-                analysisInstructions: document.getElementById('analysisInstructions').value
-            };
-            
-            const res = await fetch(getAuthUrl('/api/bot/' + botId + '/config'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body)
-            });
-
-            if (res.ok) {
-                alert("Configurações salvas com sucesso!");
-                loadAuditLogs();
-            } else {
-                const err = await res.json();
-                alert("Erro ao salvar: " + (err.error || "Acesso negado"));
-            }
-        }
-
-        async function resetSession() {
-            if (!confirm("Isso desconectará o WhatsApp atual e gerará um novo QR Code. Continuar?")) return;
-            const res = await fetch(getAuthUrl('/api/bot/' + botId + '/reset'), { method: 'POST' });
-            if (res.ok) {
-                alert("Sessão resetada! Aguarde o novo QR Code aparecer na tela.");
-                update();
-                loadAuditLogs();
-            } else {
-                alert("Erro ao resetar sessão.");
-            }
-        }
-
-        async function loadAuditLogs() {
-            const container = document.getElementById('audit-container');
-            try {
-                const res = await fetch(getAuthUrl('/api/bot/' + botId + '/audit-logs'));
-                if (!res.ok) return;
-                const logs = await res.json();
-                if (!logs || logs.length === 0) {
-                    container.innerHTML = '<p class="text-gray-500">Nenhum registro de auditoria encontrado ainda.</p>';
-                    return;
-                }
-                container.innerHTML = logs.map(function(l) {
-                    var date = l.createdAt ? new Date(l.createdAt).toLocaleString('pt-BR') : 'Agora';
-                    var isSuccess = l.result === 'SUCCESS';
-                    var colorClass = isSuccess ? 'text-green-400' : 'text-red-400';
-                    var phone = l.senderPhone ? '<span class="text-blue-400 text-[10px] ml-1">(' + l.senderPhone + ')</span>' : '';
-                    return '<div class="border border-gray-800 p-2 rounded bg-black/40 flex justify-between items-start">' +
-                        '<div>' +
-                            '<span class="font-bold ' + colorClass + '">[' + (l.action || '') + ']</span>' +
-                            '<span class="text-gray-400 ml-1">' + (l.details || l.command || '') + '</span>' +
-                            phone +
-                        '</div>' +
-                        '<span class="text-gray-600 text-[10px] ml-2 shrink-0">' + date + '</span>' +
-                    '</div>';
-                }).join('');
-            } catch(e) {
-                container.innerHTML = '<p class="text-red-500">Erro ao carregar logs.</p>';
-            }
-        }
-
-        setInterval(update, 3000);
-        update();
-        loadAuditLogs();
-    </script>
-</body>
-</html>
-    `);
+        res.json({ status: "Memória limpa com sucesso!", clearedCount: historySnap.size });
+    } catch (e) {
+        console.error("Erro ao limpar memória:", e);
+        res.status(500).json({ error: "Erro ao limpar memória" });
+    }
 });
 
 async function connectWA() {
@@ -1822,9 +1624,27 @@ function startHttpServer() {
     });
 }
 
-// Limpeza de porta antes da inicialização
-killProcessOnPort(PORT);
-startHttpServer();
+// Configuração do Vite Frontend Middleware e Inicialização
+async function setupFrontendAndListen() {
+    if (process.env.NODE_ENV !== 'production') {
+        const vite = await createViteServer({
+            server: { middlewareMode: true },
+            appType: 'spa',
+        });
+        app.use(vite.middlewares);
+    } else {
+        const distPath = path.join(process.cwd(), 'dist');
+        app.use(express.static(distPath));
+        app.get('*', (req, res) => {
+            res.sendFile(path.join(distPath, 'index.html'));
+        });
+    }
+
+    killProcessOnPort(PORT);
+    startHttpServer();
+}
+
+setupFrontendAndListen();
 
 // Encerramento limpo e liberação de recursos
 const cleanup = () => {

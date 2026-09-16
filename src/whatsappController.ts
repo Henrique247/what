@@ -1,7 +1,10 @@
-import { doc, updateDoc, collection, getDocs, writeBatch, Firestore, query, orderBy, limit } from 'firebase/firestore';
+import { doc, updateDoc, setDoc, deleteDoc, collection, getDocs, getDoc, writeBatch, Firestore, query, orderBy, limit } from 'firebase/firestore';
 import { isPhoneMatch, normalizePhone, hasPermission, PERMISSIONS } from './security';
 import { recordAuditLog, fetchAuditLogs } from './audit';
 import { GoogleGenAI } from '@google/genai';
+import { getGroupConfig, getGroupMeta, recordGroupLog } from './services/groupModeration';
+import { scheduleGroupMotivation } from './services/groupScheduler';
+import { GroupConfig } from './types';
 
 export interface PendingConfirmation {
     action: 'CLEAR_KNOWLEDGE' | 'CLEAR_HISTORY' | 'RESET_SESSION' | 'UPDATE_WELCOME_MSG';
@@ -108,17 +111,395 @@ Mensagem a analisar: "${clean}"`;
     return null;
 }
 
+export async function handleGroupSpecificCommand(opts: {
+    sock: any;
+    botId: string;
+    currentBot: any;
+    groupId: string;
+    senderJid: string;
+    senderNumber: string;
+    isOwner: boolean;
+    cleanText: string;
+    lower: string;
+    messageObj?: any;
+    firestoreDb: Firestore;
+}): Promise<{ handled: boolean }> {
+    const { sock, botId, currentBot, groupId, senderJid, senderNumber, isOwner, cleanText, lower, messageObj, firestoreDb } = opts;
+
+    const isGroupCmd = 
+        lower === '/regras' || lower === '!regras' ||
+        lower.startsWith('/definirregras') || lower.startsWith('!definirregras') ||
+        lower === '/ajudagrupo' || lower === '!ajudagrupo' ||
+        lower.startsWith('/moderacao') || lower.startsWith('!moderacao') ||
+        lower.startsWith('/links') || lower.startsWith('!links') ||
+        lower.startsWith('/palavras') || lower.startsWith('!palavras') ||
+        lower.startsWith('/spam') || lower.startsWith('!spam') ||
+        lower.startsWith('/motivacao') || lower.startsWith('!motivacao') ||
+        lower.startsWith('/avisos') || lower.startsWith('!avisos') ||
+        lower.startsWith('/limparavisos') || lower.startsWith('!limparavisos') ||
+        lower.startsWith('/ban') || lower.startsWith('!ban');
+
+    if (!isGroupCmd) return { handled: false };
+
+    // 1. /regras is available to all group participants
+    if (lower === '/regras' || lower === '!regras') {
+        const config = await getGroupConfig(firestoreDb, botId, groupId);
+        const rules = config.rulesText || 'Nenhuma regra configurada ainda para este grupo.';
+        await sock.sendMessage(groupId, {
+            text: `📜 *REGRAS DO GRUPO*\n\n${rules}`
+        });
+        return { handled: true };
+    }
+
+    // 2. All other commands require Group Admin OR Bot Owner
+    const meta = await getGroupMeta(sock, groupId);
+    const isGroupAdmin = meta?.admins.has(senderJid) || meta?.admins.has(senderNumber) || false;
+
+    if (!isOwner && !isGroupAdmin) {
+        await sock.sendMessage(groupId, {
+            text: `⛔ *Acesso Negado*\nApenas administradores do grupo ou o proprietário do bot podem executar comandos de moderação neste grupo.`
+        });
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: senderNumber,
+            actorPhone: senderNumber,
+            actorRole: 'USER',
+            action: 'UNAUTHORIZED_GROUP_ADMIN_ATTEMPT',
+            command: cleanText,
+            result: 'DENIED',
+            details: `Tentativa não autorizada no grupo ${groupId}`
+        });
+        return { handled: true };
+    }
+
+    const groupRef = doc(firestoreDb, 'bots', botId, 'groups', groupId);
+    const config = await getGroupConfig(firestoreDb, botId, groupId, meta?.subject);
+
+    // /ajudagrupo
+    if (lower === '/ajudagrupo' || lower === '!ajudagrupo') {
+        const helpText = `🛡️ *TECHSTAR | GESTÃO INTELIGENTE DE GRUPOS*
+
+• */regras* — Exibe as regras do grupo
+• */definirregras <texto>* — Define novas regras do grupo
+• */moderacao on|off* — Ativa ou desativa moderação geral
+• */links on|off|delete|warn|remove* — Filtro de links
+• */palavras list* — Lista palavras proibidas
+• */palavras add <termo>* — Adiciona palavra proibida
+• */palavras remove <termo>* — Remove palavra proibida
+• */spam on|off* — Proteção anti-flood
+• */motivacao on|off* — Mensagem diária automática
+• */motivacao hora HH:MM* — Define horário da motivação
+• */avisos [@membro]* — Consulta advertências
+• */limparavisos [@membro]* — Zera advertências
+• */ban @membro* — Remove membro do grupo (Requer Bot Admin)
+
+_Nota: Administradores e o proprietário possuem imunidade automática._`;
+        await sock.sendMessage(groupId, { text: helpText });
+        return { handled: true };
+    }
+
+    // /moderacao on|off
+    if (lower === '/moderacao on' || lower === '!moderacao on') {
+        await updateDoc(groupRef, {
+            antiLinkEnabled: true,
+            antiBadWordsEnabled: true,
+            antiSpamEnabled: true
+        });
+        await sock.sendMessage(groupId, { text: `🛡️ *Moderação Ativada!*\nFiltro de links, palavras proibidas e anti-spam foram habilitados.` });
+        await recordGroupLog(firestoreDb, {
+            botId,
+            groupId,
+            groupName: config.groupName,
+            action: 'MODERATION_ENABLED',
+            actor: senderNumber,
+            details: 'Moderação geral ativada via comando WhatsApp'
+        });
+        return { handled: true };
+    }
+
+    if (lower === '/moderacao off' || lower === '!moderacao off') {
+        await updateDoc(groupRef, {
+            antiLinkEnabled: false,
+            antiBadWordsEnabled: false,
+            antiSpamEnabled: false
+        });
+        await sock.sendMessage(groupId, { text: `⚠️ *Moderação Desativada!*\nFiltro de links, palavras proibidas e anti-spam foram desabilitados.` });
+        await recordGroupLog(firestoreDb, {
+            botId,
+            groupId,
+            groupName: config.groupName,
+            action: 'MODERATION_DISABLED',
+            actor: senderNumber,
+            details: 'Moderação geral desativada via comando WhatsApp'
+        });
+        return { handled: true };
+    }
+
+    // /links
+    if (lower.startsWith('/links') || lower.startsWith('!links')) {
+        const parts = cleanText.split(/\s+/);
+        const sub = parts[1]?.toLowerCase();
+
+        if (sub === 'on') {
+            await updateDoc(groupRef, { antiLinkEnabled: true });
+            await sock.sendMessage(groupId, { text: `🔗 *Filtro Anti-Link:* ATIVADO 🟢` });
+        } else if (sub === 'off') {
+            await updateDoc(groupRef, { antiLinkEnabled: false });
+            await sock.sendMessage(groupId, { text: `🔗 *Filtro Anti-Link:* DESATIVADO 🔴` });
+        } else if (sub === 'delete') {
+            await updateDoc(groupRef, { antiLinkAction: 'delete' });
+            await sock.sendMessage(groupId, { text: `🔗 *Ação Anti-Link:* Apenas Apagar Mensagem.` });
+        } else if (sub === 'warn') {
+            await updateDoc(groupRef, { antiLinkAction: 'delete_and_warn' });
+            await sock.sendMessage(groupId, { text: `🔗 *Ação Anti-Link:* Apagar Mensagem e Advertir Membro.` });
+        } else if (sub === 'remove') {
+            await updateDoc(groupRef, { antiLinkAction: 'remove' });
+            await sock.sendMessage(groupId, { text: `🔗 *Ação Anti-Link:* Expulsão Direta do Membro.` });
+        } else {
+            const allowed = config.allowedLinks?.join(', ') || 'Nenhum';
+            await sock.sendMessage(groupId, {
+                text: `🔗 *STATUS ANTI-LINK*\n\n• Estado: ${config.antiLinkEnabled ? '🟢 Ativo' : '🔴 Desativado'}\n• Ação: ${config.antiLinkAction}\n• Links Permitidos: ${allowed}\n\nUso: */links on | off | delete | warn | remove*`
+            });
+        }
+        return { handled: true };
+    }
+
+    // /palavras
+    if (lower.startsWith('/palavras') || lower.startsWith('!palavras')) {
+        const parts = cleanText.split(/\s+/);
+        const sub = parts[1]?.toLowerCase();
+        const word = parts.slice(2).join(' ').trim();
+
+        if (sub === 'add' && word) {
+            const current = config.badWords || [];
+            if (!current.includes(word.toLowerCase())) {
+                const updated = [...current, word.toLowerCase()];
+                await updateDoc(groupRef, { badWords: updated });
+                await sock.sendMessage(groupId, { text: `🚫 Palavra "*${word}*" adicionada à lista de termos proibidos.` });
+            } else {
+                await sock.sendMessage(groupId, { text: `ℹ️ A palavra "*${word}*" já está na lista.` });
+            }
+        } else if (sub === 'remove' && word) {
+            const current = config.badWords || [];
+            const updated = current.filter(w => w !== word.toLowerCase());
+            await updateDoc(groupRef, { badWords: updated });
+            await sock.sendMessage(groupId, { text: `✅ Palavra "*${word}*" removida da lista de termos proibidos.` });
+        } else {
+            const list = config.badWords?.length > 0 ? config.badWords.map(w => `• ${w}`).join('\n') : 'Nenhuma palavra cadastrada.';
+            await sock.sendMessage(groupId, {
+                text: `🚫 *PALAVRAS PROIBIDAS*\n\nEstado: ${config.antiBadWordsEnabled ? '🟢 Ativo' : '🔴 Desativado'}\n\n*Lista Atual:*\n${list}\n\nUso: */palavras add <termo>* ou */palavras remove <termo>*`
+            });
+        }
+        return { handled: true };
+    }
+
+    // /spam
+    if (lower.startsWith('/spam') || lower.startsWith('!spam')) {
+        const parts = cleanText.split(/\s+/);
+        const sub = parts[1]?.toLowerCase();
+        if (sub === 'on') {
+            await updateDoc(groupRef, { antiSpamEnabled: true });
+            await sock.sendMessage(groupId, { text: `⚡ *Anti-Spam / Anti-Flood:* ATIVADO 🟢` });
+        } else if (sub === 'off') {
+            await updateDoc(groupRef, { antiSpamEnabled: false });
+            await sock.sendMessage(groupId, { text: `⚡ *Anti-Spam / Anti-Flood:* DESATIVADO 🔴` });
+        } else {
+            await sock.sendMessage(groupId, {
+                text: `⚡ *STATUS ANTI-SPAM*\n\n• Estado: ${config.antiSpamEnabled ? '🟢 Ativo' : '🔴 Desativado'}\n• Limite: Máx ${config.antiSpamMaxMessages} mensagens em ${config.antiSpamTimeWindowSeconds}s\n\nUso: */spam on | off*`
+            });
+        }
+        return { handled: true };
+    }
+
+    // /motivacao
+    if (lower.startsWith('/motivacao') || lower.startsWith('!motivacao')) {
+        const parts = cleanText.split(/\s+/);
+        const sub = parts[1]?.toLowerCase();
+        const arg = parts[2];
+
+        if (sub === 'on') {
+            await updateDoc(groupRef, { dailyMotivationEnabled: true });
+            config.dailyMotivationEnabled = true;
+            scheduleGroupMotivation({
+                botId,
+                groupConfig: config,
+                getActiveSock: () => sock,
+                firestoreDb,
+                geminiKeys: currentBot.geminiKeys
+            });
+            await sock.sendMessage(groupId, { text: `🌅 *Mensagem Diária Motivacional:* ATIVADA 🟢\nHorário configurado: *${config.dailyMotivationTime}* [${config.dailyMotivationTimezone}]` });
+        } else if (sub === 'off') {
+            await updateDoc(groupRef, { dailyMotivationEnabled: false });
+            config.dailyMotivationEnabled = false;
+            scheduleGroupMotivation({
+                botId,
+                groupConfig: config,
+                getActiveSock: () => sock,
+                firestoreDb,
+                geminiKeys: currentBot.geminiKeys
+            });
+            await sock.sendMessage(groupId, { text: `🌅 *Mensagem Diária Motivacional:* DESATIVADA 🔴` });
+        } else if (sub === 'hora' && arg && /^\d{1,2}:\d{2}$/.test(arg)) {
+            const formattedTime = arg.length === 4 ? `0${arg}` : arg;
+            await updateDoc(groupRef, { dailyMotivationTime: formattedTime });
+            config.dailyMotivationTime = formattedTime;
+            scheduleGroupMotivation({
+                botId,
+                groupConfig: config,
+                getActiveSock: () => sock,
+                firestoreDb,
+                geminiKeys: currentBot.geminiKeys
+            });
+            await sock.sendMessage(groupId, { text: `⏰ Horário da mensagem diária alterado para *${formattedTime}* [${config.dailyMotivationTimezone}].` });
+        } else {
+            await sock.sendMessage(groupId, {
+                text: `🌅 *MOTIVAÇÃO DIÁRIA*\n\n• Estado: ${config.dailyMotivationEnabled ? '🟢 Ativo' : '🔴 Desativado'}\n• Horário: ${config.dailyMotivationTime}\n• Fuso: ${config.dailyMotivationTimezone}\n• Tópico: ${config.dailyMotivationTopic || 'Foco e Sucesso'}\n\nUso: */motivacao on | off* ou */motivacao hora 08:00*`
+            });
+        }
+        return { handled: true };
+    }
+
+    // /definirregras
+    if (lower.startsWith('/definirregras') || lower.startsWith('!definirregras')) {
+        const newRules = cleanText.replace(/^\/?!?definirregras\s*/i, '').trim();
+        if (!newRules) {
+            await sock.sendMessage(groupId, { text: `⚠️ Forneça o texto das regras. Exemplo:\n*/definirregras 1. Respeito mútuo\\n2. Proibido links*` });
+            return { handled: true };
+        }
+        await updateDoc(groupRef, { rulesText: newRules });
+        await sock.sendMessage(groupId, { text: `✅ *Regras do grupo atualizadas com sucesso!*\n\n${newRules}` });
+        return { handled: true };
+    }
+
+    // /avisos
+    if (lower.startsWith('/avisos') || lower.startsWith('!avisos')) {
+        const contextInfo = messageObj?.extendedTextMessage?.contextInfo;
+        const mentionedJid = contextInfo?.mentionedJid?.[0];
+
+        if (mentionedJid) {
+            const targetPhone = normalizePhone(mentionedJid);
+            const wDoc = await getDoc(doc(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings', targetPhone));
+            if (wDoc.exists()) {
+                const wData = wDoc.data();
+                const reasons = (wData.reasons || []).map((r: string, i: number) => `${i + 1}. ${r}`).join('\n');
+                await sock.sendMessage(groupId, {
+                    text: `📋 *Advertências de @${targetPhone}*\nTotal: *${wData.count}/${config.maxWarnings}*\n\n*Motivos:*\n${reasons || 'Sem detalhes'}`,
+                    mentions: [mentionedJid]
+                });
+            } else {
+                await sock.sendMessage(groupId, {
+                    text: `✅ O membro @${targetPhone} possui zero advertências registradas.`,
+                    mentions: [mentionedJid]
+                });
+            }
+        } else {
+            const wSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings'));
+            const activeWarned = wSnap.docs.filter(d => (d.data().count || 0) > 0);
+            await sock.sendMessage(groupId, {
+                text: `📋 *RESUMO DE ADVERTÊNCIAS DO GRUPO*\n\n• Membros com avisos ativos: ${activeWarned.length}\n• Limite para remoção: *${config.maxWarnings} avisos*\n\nPara consultar um membro: */avisos @membro*`
+            });
+        }
+        return { handled: true };
+    }
+
+    // /limparavisos
+    if (lower.startsWith('/limparavisos') || lower.startsWith('!limparavisos')) {
+        const contextInfo = messageObj?.extendedTextMessage?.contextInfo;
+        const mentionedJid = contextInfo?.mentionedJid?.[0];
+
+        if (mentionedJid) {
+            const targetPhone = normalizePhone(mentionedJid);
+            await setDoc(doc(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings', targetPhone), {
+                count: 0,
+                reasons: [],
+                lastWarningAt: new Date().toISOString()
+            }, { merge: true });
+
+            await sock.sendMessage(groupId, {
+                text: `✅ As advertências de @${targetPhone} foram zeradas.`,
+                mentions: [mentionedJid]
+            });
+        } else {
+            const wSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups', groupId, 'warnings'));
+            const batch = writeBatch(firestoreDb);
+            wSnap.docs.forEach(d => batch.delete(d.ref));
+            await batch.commit();
+
+            await sock.sendMessage(groupId, { text: `✅ Todas as advertências dos membros deste grupo foram zeradas.` });
+        }
+        return { handled: true };
+    }
+
+    // /ban
+    if (lower.startsWith('/ban') || lower.startsWith('!ban')) {
+        const contextInfo = messageObj?.extendedTextMessage?.contextInfo;
+        const targetJid = contextInfo?.mentionedJid?.[0];
+
+        if (!targetJid) {
+            await sock.sendMessage(groupId, { text: `⚠️ Mencione o membro que deseja remover. Exemplo: */ban @membro*` });
+            return { handled: true };
+        }
+
+        const targetPhone = normalizePhone(targetJid);
+        const botPhone = sock.user?.id ? normalizePhone(sock.user.id) : '';
+        const ownerPhone = normalizePhone(currentBot.ownerPhone || currentBot.ownerNumber);
+
+        const isTargetAdmin = meta?.admins.has(targetJid) || meta?.admins.has(targetPhone);
+        const isTargetOwner = isPhoneMatch(targetPhone, ownerPhone);
+        const isTargetBot = isPhoneMatch(targetPhone, botPhone);
+
+        if (isTargetAdmin || isTargetOwner || isTargetBot) {
+            await sock.sendMessage(groupId, {
+                text: `⛔ *Ação Bloqueada*: Administradores, o proprietário e o próprio bot não podem ser removidos.`,
+                mentions: [targetJid]
+            });
+            return { handled: true };
+        }
+
+        if (!meta?.botIsAdmin) {
+            await sock.sendMessage(groupId, {
+                text: `⚠️ O bot precisa ser promovido a *Administrador do Grupo* para remover participantes.`
+            });
+            return { handled: true };
+        }
+
+        try {
+            await sock.groupParticipantsUpdate(groupId, [targetJid], 'remove');
+            await sock.sendMessage(groupId, {
+                text: `🚨 O membro @${targetPhone} foi removido do grupo por um administrador.`,
+                mentions: [targetJid]
+            });
+            await recordGroupLog(firestoreDb, {
+                botId,
+                groupId,
+                groupName: config.groupName,
+                action: 'MEMBER_BANNED_MANUAL',
+                actor: senderNumber,
+                targetUser: targetPhone,
+                details: `Remoção manual executada por ${senderNumber}`
+            });
+        } catch (err: any) {
+            await sock.sendMessage(groupId, { text: `❌ Erro ao remover membro: ${err.message || 'Falha no WhatsApp'}` });
+        }
+        return { handled: true };
+    }
+
+    return { handled: false };
+}
+
 export async function handleWhatsAppAdminMessage(opts: {
     sock: any;
     botId: string;
     currentBot: any;
     senderJid: string;
+    groupId?: string;
     text: string;
+    messageObj?: any;
     firestoreDb: Firestore;
     isGroup: boolean;
     onResetBot?: (botId: string) => Promise<void>;
 }): Promise<{ handled: boolean }> {
-    const { sock, botId, currentBot, senderJid, text, firestoreDb, isGroup, onResetBot } = opts;
+    const { sock, botId, currentBot, senderJid, groupId, text, messageObj, firestoreDb, isGroup, onResetBot } = opts;
     const cleanText = (text || '').trim();
     if (!cleanText) return { handled: false };
 
@@ -130,6 +511,26 @@ export async function handleWhatsAppAdminMessage(opts: {
     const hasPending = pendingConfirmations.has(sessionKey);
     const isOwnerModeActive = ownerModeSessions.get(sessionKey) === true;
     const lower = cleanText.toLowerCase();
+
+    // Check for Group Commands when in a group
+    if (isGroup && groupId) {
+        const handledGroupCmd = await handleGroupSpecificCommand({
+            sock,
+            botId,
+            currentBot,
+            groupId,
+            senderJid,
+            senderNumber,
+            isOwner,
+            cleanText,
+            lower,
+            messageObj,
+            firestoreDb
+        });
+        if (handledGroupCmd.handled) {
+            return { handled: true };
+        }
+    }
 
     // Check if message is an explicit slash command
     const isSlashCommand = cleanText.startsWith('/') || cleanText.startsWith('!');

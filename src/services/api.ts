@@ -1,0 +1,277 @@
+import { Bot, AdminStats, BotStats, MemoryContact, AuditLog, GroupConfig, GroupWarning, GroupLog } from '../types';
+
+class ApiService {
+  private getHeaders(token?: string, isAdmin: boolean = true): HeadersInit {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (isAdmin) {
+      headers['x-requested-by'] = 'techstar-admin';
+    }
+    if (token) {
+      headers['x-bot-token'] = token;
+    }
+    return headers;
+  }
+
+  // Admin Bot Management
+  async getBots(): Promise<Bot[]> {
+    const res = await fetch('/api/admin/bots', {
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error('Falha ao listar bots');
+    return res.json();
+  }
+
+  async createBot(name: string): Promise<{ id: string; accessToken: string; status: string }> {
+    const res = await fetch('/api/admin/bots', {
+      method: 'POST',
+      headers: this.getHeaders(),
+      body: JSON.stringify({ name })
+    });
+    if (!res.ok) throw new Error('Falha ao criar bot');
+    return res.json();
+  }
+
+  async toggleBot(botId: string): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/bots/${botId}/toggle`, {
+      method: 'POST',
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error('Falha ao alternar estado do bot');
+    return res.json();
+  }
+
+  async deleteBot(botId: string): Promise<{ status: string }> {
+    const res = await fetch(`/api/admin/bots/${botId}`, {
+      method: 'DELETE',
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error('Falha ao excluir bot');
+    return res.json();
+  }
+
+  async regenerateToken(botId: string): Promise<{ accessToken: string; status: string }> {
+    const res = await fetch(`/api/admin/bots/${botId}/regenerate-token`, {
+      method: 'POST',
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error('Falha ao regenerar token');
+    return res.json();
+  }
+
+  // Admin Aggregated Stats
+  async getAdminStats(): Promise<AdminStats> {
+    const res = await fetch('/api/admin/stats', {
+      headers: this.getHeaders()
+    });
+    if (!res.ok) throw new Error('Falha ao carregar métricas globais');
+    return res.json();
+  }
+
+  // Individual Bot Operations
+  async getBotConfig(botId: string, token?: string, isAdmin: boolean = true): Promise<Bot> {
+    const url = token ? `/api/bot/${botId}/config?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/config`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      if (res.status === 403) throw new Error('Acesso não autorizado ou token inválido');
+      if (res.status === 404) throw new Error('Bot não encontrado');
+      throw new Error('Erro ao carregar configurações do bot');
+    }
+    return res.json();
+  }
+
+  async saveBotConfig(botId: string, config: Partial<Bot>, token?: string, isAdmin: boolean = true): Promise<{ status: string }> {
+    const url = token ? `/api/bot/${botId}/config?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/config`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify(config)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao salvar configurações do bot');
+    }
+    return res.json();
+  }
+
+  async resetBotSession(botId: string, token?: string, isAdmin: boolean = true): Promise<{ status: string }> {
+    const url = token ? `/api/bot/${botId}/reset?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/reset`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao reiniciar sessão do WhatsApp');
+    }
+    return res.json();
+  }
+
+  async getBotAuditLogs(botId: string, token?: string, isAdmin: boolean = true): Promise<AuditLog[]> {
+    const url = token ? `/api/bot/${botId}/audit-logs?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/audit-logs`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) throw new Error('Falha ao buscar logs de auditoria');
+    return res.json();
+  }
+
+  async getBotStats(botId: string, token?: string, isAdmin: boolean = true): Promise<BotStats> {
+    const url = token ? `/api/bot/${botId}/stats?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/stats`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) throw new Error('Falha ao buscar estatísticas do bot');
+    return res.json();
+  }
+
+  async getBotMemory(botId: string, token?: string, isAdmin: boolean = true): Promise<MemoryContact[]> {
+    const url = token ? `/api/bot/${botId}/memory?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/memory`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) throw new Error('Falha ao listar memória de conversas');
+    return res.json();
+  }
+
+  async clearBotMemory(botId: string, token?: string, isAdmin: boolean = true): Promise<{ status: string; clearedCount: number }> {
+    const url = token ? `/api/bot/${botId}/memory/clear?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/memory/clear`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao limpar memória do bot');
+    }
+    return res.json();
+  }
+
+  // ==========================================
+  // Group Control & Automation API Methods
+  // ==========================================
+
+  async getBotGroups(botId: string, token?: string, isAdmin: boolean = true): Promise<Array<{
+    groupId: string;
+    groupName: string;
+    groupDesc?: string;
+    participantCount: number;
+    botIsAdmin: boolean;
+    config: GroupConfig;
+  }>> {
+    const url = token ? `/api/bot/${botId}/groups?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao listar grupos do bot');
+    }
+    return res.json();
+  }
+
+  async getGroupDetails(botId: string, groupId: string, token?: string, isAdmin: boolean = true): Promise<{
+    groupId: string;
+    groupName: string;
+    groupDesc?: string;
+    participantCount: number;
+    botIsAdmin: boolean;
+    config: GroupConfig;
+    activeWarnings: number;
+    recentLogs: GroupLog[];
+  }> {
+    const url = token ? `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao carregar detalhes do grupo');
+    }
+    return res.json();
+  }
+
+  async saveGroupConfig(botId: string, groupId: string, config: Partial<GroupConfig>, token?: string, isAdmin: boolean = true): Promise<{ status: string; config: GroupConfig }> {
+    const url = token ? `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify(config)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao salvar configurações do grupo');
+    }
+    return res.json();
+  }
+
+  async getGroupWarnings(botId: string, groupId: string, token?: string, isAdmin: boolean = true): Promise<GroupWarning[]> {
+    const url = token ? `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/warnings?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/warnings`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao buscar advertências do grupo');
+    }
+    return res.json();
+  }
+
+  async resetGroupWarnings(botId: string, groupId: string, participantPhone?: string, token?: string, isAdmin: boolean = true): Promise<{ status: string }> {
+    const url = token ? `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/warnings/reset?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/warnings/reset`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify({ participantPhone })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao zerar advertências');
+    }
+    return res.json();
+  }
+
+  async getGroupLogs(botId: string, groupId: string, token?: string, isAdmin: boolean = true): Promise<GroupLog[]> {
+    const url = token ? `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/logs?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/logs`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao carregar logs do grupo');
+    }
+    return res.json();
+  }
+
+  async testGroupMotivation(botId: string, groupId: string, token?: string, isAdmin: boolean = true): Promise<{ status: string; details: string }> {
+    const url = token ? `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/test-motivation?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/test-motivation`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao enviar mensagem motivacional de teste');
+    }
+    return res.json();
+  }
+
+  async executeGroupAction(botId: string, groupId: string, action: string, participantJid?: string, token?: string, isAdmin: boolean = true): Promise<{ status: string }> {
+    const url = token ? `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/action?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/groups/${encodeURIComponent(groupId)}/action`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify({ action, participantJid })
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao executar ação no grupo');
+    }
+    return res.json();
+  }
+}
+
+export const api = new ApiService();
