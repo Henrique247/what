@@ -21,7 +21,9 @@ import {
     PERMISSIONS, 
     ALL_PERMISSIONS, 
     sanitizeBotForClient, 
-    rateLimiter 
+    rateLimiter,
+    hashSecret,
+    verifySecret
 } from './src/security';
 import { recordAuditLog, fetchAuditLogs } from './src/audit';
 import { handleWhatsAppAdminMessage } from './src/whatsappController';
@@ -687,6 +689,278 @@ async function requireBotAuth(req: express.Request, res: express.Response, next:
         res.status(500).json({ error: "Erro interno de autorização" });
     }
 }
+
+// Initialize Admin Settings default password '123456' if not exists
+async function ensureAdminSettings() {
+    try {
+        const ref = doc(firestoreDb, 'adminSettings', 'general');
+        const snap = await getDoc(ref);
+        if (!snap.exists()) {
+            const defaultPasswordHash = hashSecret('123456');
+            await setDoc(ref, {
+                passwordHash: defaultPasswordHash,
+                createdAt: serverTimestamp()
+            });
+            console.log("[Admin] Configuração de admin padrão inicializada com sucesso.");
+        }
+    } catch (e) {
+        console.error("[Admin] Erro ao assegurar config de admin:", e);
+    }
+}
+ensureAdminSettings();
+
+// API Routes for Multi-Bot & Authentication
+app.post('/api/admin/login', rateLimiter(20, 60000), async (req, res) => {
+    try {
+        const { password } = req.body;
+        if (!password) return res.status(400).json({ error: "Chave de acesso obrigatória" });
+
+        const ref = doc(firestoreDb, 'adminSettings', 'general');
+        const snap = await getDoc(ref);
+        let valid = false;
+        if (snap.exists()) {
+            valid = verifySecret(password, snap.data().passwordHash);
+        } else {
+            valid = (password === '123456');
+        }
+
+        if (!valid) {
+            await recordAuditLog(firestoreDb, {
+                botId: 'global',
+                role: 'ADMIN',
+                action: 'ADMIN_LOGIN_FAILED',
+                result: 'DENIED',
+                details: 'Tentativa de login admin com chave incorreta'
+            });
+            return res.status(403).json({ error: "Chave de acesso incorreta" });
+        }
+
+        const sessionToken = generateSecureToken();
+        await recordAuditLog(firestoreDb, {
+            botId: 'global',
+            role: 'ADMIN',
+            action: 'ADMIN_LOGIN_SUCCESS',
+            result: 'SUCCESS',
+            details: 'Login de Administrador Geral bem-sucedido'
+        });
+
+        res.json({ success: true, sessionToken, message: "Login realizado com sucesso" });
+    } catch (e: any) {
+        console.error("Erro no login admin:", e);
+        res.status(500).json({ error: "Erro interno no servidor" });
+    }
+});
+
+app.post('/api/admin/change-password', async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+        const ref = doc(firestoreDb, 'adminSettings', 'general');
+        const snap = await getDoc(ref);
+        let valid = false;
+        if (snap.exists()) {
+            valid = verifySecret(currentPassword, snap.data().passwordHash);
+        } else {
+            valid = (currentPassword === '123456');
+        }
+
+        if (!valid) {
+            return res.status(403).json({ error: "Senha atual incorreta" });
+        }
+
+        if (!newPassword || newPassword.length < 4) {
+            return res.status(400).json({ error: "A nova chave deve ter pelo menos 4 caracteres" });
+        }
+
+        const newHash = hashSecret(newPassword);
+        await setDoc(ref, { passwordHash: newHash, updatedAt: serverTimestamp() }, { merge: true });
+
+        await recordAuditLog(firestoreDb, {
+            botId: 'global',
+            role: 'ADMIN',
+            action: 'ADMIN_KEY_CHANGED',
+            result: 'SUCCESS',
+            details: 'Chave de acesso do Admin alterada com sucesso'
+        });
+
+        res.json({ success: true, message: "Chave alterada com sucesso" });
+    } catch (e: any) {
+        console.error("Erro ao alterar chave admin:", e);
+        res.status(500).json({ error: "Erro ao alterar chave" });
+    }
+});
+
+app.post('/api/bot/:id/login', rateLimiter(20, 60000), async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const { pin } = req.body;
+        if (!pin) return res.status(400).json({ error: "PIN de acesso obrigatório" });
+
+        const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+        if (!botDoc.exists()) return res.status(404).json({ error: "Bot não encontrado" });
+        const botData = botDoc.data();
+
+        let pinValid = false;
+        if (botData.pinHash) {
+            pinValid = verifySecret(pin, botData.pinHash);
+        } else {
+            pinValid = (pin === '1234');
+            if (pinValid) {
+                await updateDoc(doc(firestoreDb, 'bots', botId), { pinHash: hashSecret('1234') });
+            }
+        }
+
+        if (!pinValid) {
+            await recordAuditLog(firestoreDb, {
+                botId,
+                role: 'OWNER',
+                action: 'BOT_LOGIN_FAILED',
+                result: 'DENIED',
+                details: 'Tentativa de login com PIN inválido'
+            });
+            return res.status(403).json({ error: "PIN incorreto para este bot" });
+        }
+
+        if (!botData.accessToken) {
+            const newToken = generateSecureToken();
+            await updateDoc(doc(firestoreDb, 'bots', botId), { accessToken: newToken });
+            botData.accessToken = newToken;
+        }
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: 'OWNER',
+            action: 'BOT_LOGIN_SUCCESS',
+            result: 'SUCCESS',
+            details: 'Login do proprietário bem-sucedido'
+        });
+
+        res.json({ success: true, accessToken: botData.accessToken, botName: botData.name });
+    } catch (e: any) {
+        console.error("Erro no login do bot:", e);
+        res.status(500).json({ error: "Erro interno no servidor" });
+    }
+});
+
+app.post('/api/bot/:id/forgot-pin', rateLimiter(10, 60000), async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const { fullName, phone, email } = req.body;
+        if (!fullName || !phone) return res.status(400).json({ error: "Nome completo e número de WhatsApp são obrigatórios" });
+
+        const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+        if (!botDoc.exists()) return res.status(404).json({ error: "Bot não encontrado" });
+        const botData = botDoc.data();
+
+        const cleanInputPhone = normalizePhone(phone);
+
+        await addDoc(collection(firestoreDb, 'botAccessRequests'), {
+            botId,
+            botName: botData.name,
+            ownerId: botData.ownerId || `owner_${botId}`,
+            fullName: fullName.trim(),
+            phone: cleanInputPhone,
+            email: email ? email.trim() : '',
+            status: 'PENDING',
+            createdAt: serverTimestamp(),
+            expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+        });
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: 'USER',
+            action: 'PIN_RESET_REQUESTED',
+            result: 'SUCCESS',
+            details: `Solicitação de recuperação de PIN criada para ${fullName}`
+        });
+
+        res.json({ 
+            success: true, 
+            message: "Se os dados corresponderem a um proprietário, o pedido de recuperação será processado." 
+        });
+    } catch (e: any) {
+        console.error("Erro ao solicitar recuperação:", e);
+        res.status(500).json({ error: "Erro ao processar solicitação" });
+    }
+});
+
+app.get('/api/admin/recovery-requests', async (req, res) => {
+    try {
+        const q = query(collection(firestoreDb, 'botAccessRequests'), orderBy('createdAt', 'desc'));
+        const snap = await getDocs(q);
+        const requests = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+        res.json(requests);
+    } catch (e) {
+        console.error("Erro ao listar pedidos:", e);
+        res.status(500).json({ error: "Erro ao listar pedidos" });
+    }
+});
+
+app.post('/api/admin/recovery-requests/:reqId/approve', async (req, res) => {
+    try {
+        const reqId = req.params.reqId;
+        const { newPin } = req.body;
+        if (!newPin || newPin.length < 4) return res.status(400).json({ error: "Novo PIN deve ter pelo menos 4 dígitos" });
+
+        const reqDocRef = doc(firestoreDb, 'botAccessRequests', reqId);
+        const reqDoc = await getDoc(reqDocRef);
+        if (!reqDoc.exists()) return res.status(404).json({ error: "Solicitação não encontrada" });
+        const reqData = reqDoc.data();
+
+        if (reqData.status !== 'PENDING') return res.status(400).json({ error: "Solicitação já processada ou expirada" });
+
+        const botRef = doc(firestoreDb, 'bots', reqData.botId);
+        const newAccessToken = generateSecureToken();
+        await updateDoc(botRef, {
+            pinHash: hashSecret(newPin),
+            accessToken: newAccessToken
+        });
+
+        await updateDoc(reqDocRef, {
+            status: 'APPROVED',
+            reviewedAt: serverTimestamp()
+        });
+
+        await recordAuditLog(firestoreDb, {
+            botId: reqData.botId,
+            role: 'ADMIN',
+            action: 'PIN_RESET_APPROVED',
+            result: 'SUCCESS',
+            details: `PIN redefinido com sucesso pelo Admin para o bot ${reqData.botId}`
+        });
+
+        res.json({ success: true, message: "PIN redefinido com sucesso e sessões anteriores invalidadas." });
+    } catch (e: any) {
+        console.error("Erro ao aprovar recuperação:", e);
+        res.status(500).json({ error: "Erro ao aprovar recuperação" });
+    }
+});
+
+app.post('/api/admin/recovery-requests/:reqId/reject', async (req, res) => {
+    try {
+        const reqId = req.params.reqId;
+        const reqDocRef = doc(firestoreDb, 'botAccessRequests', reqId);
+        const reqDoc = await getDoc(reqDocRef);
+        if (!reqDoc.exists()) return res.status(404).json({ error: "Solicitação não encontrada" });
+
+        await updateDoc(reqDocRef, {
+            status: 'REJECTED',
+            reviewedAt: serverTimestamp()
+        });
+
+        await recordAuditLog(firestoreDb, {
+            botId: reqDoc.data().botId,
+            role: 'ADMIN',
+            action: 'PIN_RESET_REJECTED',
+            result: 'SUCCESS',
+            details: 'Solicitação de recuperação rejeitada pelo Admin'
+        });
+
+        res.json({ success: true, message: "Solicitação rejeitada" });
+    } catch (e: any) {
+        console.error("Erro ao rejeitar recuperação:", e);
+        res.status(500).json({ error: "Erro ao rejeitar recuperação" });
+    }
+});
 
 // API Routes for Multi-Bot
 app.get('/api/admin/bots', async (req, res) => {

@@ -71,11 +71,10 @@ export const BotsListPage: React.FC<BotsListPageProps> = ({
 
   const handleCopyClientLink = (bot: Bot, e: React.MouseEvent) => {
     e.stopPropagation();
-    const tokenPart = bot.accessToken ? `?token=${bot.accessToken}` : '';
-    const fullUrl = `${window.location.origin}/manage/${bot.id}${tokenPart}`;
+    const fullUrl = `${window.location.origin}/bot/${bot.id}`;
     navigator.clipboard.writeText(fullUrl);
     setCopiedTokenId(bot.id);
-    toast.success('Link seguro do cliente copiado!');
+    toast.success('Link do bot copiado!');
     setTimeout(() => setCopiedTokenId(null), 2000);
   };
 

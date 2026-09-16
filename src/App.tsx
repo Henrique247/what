@@ -6,6 +6,9 @@ import { Topbar } from './components/layout/Topbar';
 import { DashboardPage } from './pages/DashboardPage';
 import { BotsListPage } from './pages/BotsListPage';
 import { BotManagePage } from './pages/BotManagePage';
+import { AdminLoginPage } from './pages/AdminLoginPage';
+import { BotLoginPage } from './pages/BotLoginPage';
+import { BotForgotPinModal } from './pages/BotForgotPinModal';
 import { CreateBotWizard } from './components/CreateBotWizard';
 import { ToastProvider, useToast } from './components/ui/Toast';
 
@@ -13,7 +16,8 @@ const AppContent: React.FC = () => {
   const toast = useToast();
 
   // Navigation & View State
-  const [currentView, setCurrentView] = useState<'dashboard' | 'bots' | 'manage'>('dashboard');
+  const [currentView, setCurrentView] = useState<'dashboard' | 'bots' | 'manage' | 'admin-login' | 'bot-login'>('dashboard');
+  const [selectedBotId, setSelectedBotId] = useState<string | null>(null);
   const [selectedBot, setSelectedBot] = useState<Bot | null>(null);
   const [activeBotTab, setActiveBotTab] = useState<ActiveTab>('overview');
 
@@ -26,10 +30,12 @@ const AppContent: React.FC = () => {
   // Security & Mode State
   const [isAdminMode, setIsAdminMode] = useState(true);
   const [clientToken, setClientToken] = useState<string | undefined>(undefined);
-
-  // Modals & Mobile Drawer State
+  const [forgotPinModalOpen, setForgotPinModalOpen] = useState(false);
   const [createWizardOpen, setCreateWizardOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+
+  // Check Auth State
+  const adminToken = localStorage.getItem('techstar_admin_token');
 
   // Load Data
   const loadData = useCallback(async (showToast: boolean = false) => {
@@ -43,7 +49,6 @@ const AppContent: React.FC = () => {
       setBots(fetchedBots);
       setAdminStats(fetchedStats);
 
-      // If a bot is currently selected, update its reference
       if (selectedBot) {
         const updated = fetchedBots.find((b) => b.id === selectedBot.id);
         if (updated) setSelectedBot(updated);
@@ -70,30 +75,67 @@ const AppContent: React.FC = () => {
         setClientToken(tokenParam);
       }
 
-      // Check if URL is /manage/:id
-      const manageMatch = path.match(/^\/manage\/([^/]+)/);
-      if (manageMatch && manageMatch[1]) {
-        const botId = manageMatch[1];
+      // Check if URL is /admin
+      if (path.startsWith('/admin')) {
+        if (!localStorage.getItem('techstar_admin_token')) {
+          setCurrentView('admin-login');
+          setLoading(false);
+          return;
+        }
+        setIsAdminMode(true);
+        setCurrentView('dashboard');
+        loadData();
+        return;
+      }
+
+      // Check if URL is /bot/:id or /manage/:id
+      const botMatch = path.match(/^\/(?:bot|manage)\/([^/]+)/);
+      if (botMatch && botMatch[1]) {
+        const botId = botMatch[1];
+        setSelectedBotId(botId);
+
+        const botToken = localStorage.getItem(`bot_token_${botId}`) || tokenParam;
+        const hasAdminAuth = !!localStorage.getItem('techstar_admin_token');
+
+        if (!botToken && !hasAdminAuth) {
+          setCurrentView('bot-login');
+          setLoading(false);
+          return;
+        }
+
         try {
-          // If accessing via /manage/:id with client token, might be client mode
-          if (tokenParam && !isAdminMode) {
-            setIsAdminMode(false);
-          }
-          const botConfig = await api.getBotConfig(botId, tokenParam || undefined, isAdminMode);
+          const isAdmin = hasAdminAuth;
+          const botConfig = await api.getBotConfig(botId, botToken || undefined, isAdmin);
           setSelectedBot(botConfig);
+          setIsAdminMode(isAdmin);
+          if (botToken) setClientToken(botToken);
           setCurrentView('manage');
         } catch (e: any) {
           console.error('Erro ao carregar bot da URL:', e);
           toast.error(e.message || 'Erro ao carregar bot solicitado.');
-          setCurrentView('bots');
+          setCurrentView('bot-login');
+        } finally {
+          setLoading(false);
         }
+        return;
+      }
+
+      // Root /
+      if (path === '/' || path === '') {
+        if (!localStorage.getItem('techstar_admin_token')) {
+          // If no admin token, redirect or prompt admin login
+          window.history.replaceState({}, '', '/admin');
+          setCurrentView('admin-login');
+          setLoading(false);
+          return;
+        }
+        loadData();
+        setCurrentView('dashboard');
       }
     };
 
-    loadData();
     handleUrlRoute();
 
-    // Browser back/forward button support
     const handlePopState = () => {
       handleUrlRoute();
     };
@@ -106,16 +148,14 @@ const AppContent: React.FC = () => {
     setCurrentView(view);
     if (view === 'manage' && bot) {
       setSelectedBot(bot);
-      const tokenPart = bot.accessToken ? `?token=${bot.accessToken}` : (clientToken ? `?token=${clientToken}` : '');
-      window.history.pushState({}, '', `/manage/${bot.id}${tokenPart}`);
+      window.history.pushState({}, '', `/bot/${bot.id}`);
     } else if (view === 'bots') {
-      window.history.pushState({}, '', '/');
+      window.history.pushState({}, '', '/admin');
     } else if (view === 'dashboard') {
-      window.history.pushState({}, '', '/');
+      window.history.pushState({}, '', '/admin');
     }
   };
 
-  // Bot Actions
   const handleToggleBot = async (botId: string) => {
     try {
       await api.toggleBot(botId);
@@ -163,6 +203,51 @@ const AppContent: React.FC = () => {
     }
   };
 
+  // Render Admin Login if needed
+  if (currentView === 'admin-login') {
+    return (
+      <AdminLoginPage
+        onLoginSuccess={() => {
+          window.history.pushState({}, '', '/admin');
+          setCurrentView('dashboard');
+          loadData();
+        }}
+        onNavigateHome={() => {
+          window.history.pushState({}, '', '/admin');
+          setCurrentView('admin-login');
+        }}
+      />
+    );
+  }
+
+  // Render Bot Login if needed
+  if (currentView === 'bot-login' && selectedBotId) {
+    return (
+      <>
+        <BotLoginPage
+          botId={selectedBotId}
+          onLoginSuccess={async (token) => {
+            setClientToken(token);
+            try {
+              const botConfig = await api.getBotConfig(selectedBotId, token, false);
+              setSelectedBot(botConfig);
+              setCurrentView('manage');
+              window.history.pushState({}, '', `/bot/${selectedBotId}`);
+            } catch (err: any) {
+              toast.error(err.message || 'Erro ao carregar bot');
+            }
+          }}
+          onOpenForgotPin={() => setForgotPinModalOpen(true)}
+        />
+        <BotForgotPinModal
+          isOpen={forgotPinModalOpen}
+          onClose={() => setForgotPinModalOpen(false)}
+          botId={selectedBotId}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#080A0C] text-[#F3F4F6] flex">
       {/* Sidebar Navigation */}
@@ -175,9 +260,8 @@ const AppContent: React.FC = () => {
         onOpenCreateModal={() => setCreateWizardOpen(true)}
         isAdminMode={isAdminMode}
         onToggleAdminMode={() => {
-          const next = !isAdminMode;
-          setIsAdminMode(next);
-          toast.info(next ? 'Modo TECHSTAR ADMIN ativado' : 'Modo CLIENTE (Restrito) ativado');
+          localStorage.removeItem('techstar_admin_token');
+          window.location.href = '/admin';
         }}
         isOpenMobile={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}

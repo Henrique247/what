@@ -100,3 +100,21 @@ export function rateLimiter(limitCount: number = 100, windowMs: number = 60000) 
         next();
     };
 }
+
+export function hashSecret(secret: string): string {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(secret, salt, 64).toString('hex');
+    return `${salt}:${hash}`;
+}
+
+export function verifySecret(secret: string, storedHash: string): boolean {
+    if (!storedHash || !storedHash.includes(':')) return false;
+    const [salt, originalHash] = storedHash.split(':');
+    try {
+        const hash = crypto.scryptSync(secret, salt, 64).toString('hex');
+        return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(originalHash, 'hex'));
+    } catch {
+        return false;
+    }
+}
+
