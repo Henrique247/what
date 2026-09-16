@@ -251,10 +251,15 @@ const currentKeyIndexes = new Map<string, number>();
 
 const startingBots = new Set<string>();
 const botReconnectAttempts = new Map<string, number>();
+const reconnectTimers = new Map<string, NodeJS.Timeout>();
 
 async function resetBotSession(botId: string) {
     console.log(`[Bot ${botId}] Resetando sessão WhatsApp e gerando novo QR...`);
     botReconnectAttempts.delete(botId);
+    if (reconnectTimers.has(botId)) {
+        clearTimeout(reconnectTimers.get(botId));
+        reconnectTimers.delete(botId);
+    }
     if (activeSocks.has(botId)) {
         try {
             const sock = activeSocks.get(botId);
@@ -282,6 +287,21 @@ async function startBot(botId: string) {
         console.log(`[Bot ${botId}] Já está iniciando, ignorando nova chamada (lock ativo).`);
         return;
     }
+
+    // Re-verify if bot still exists and is active in DB before starting
+    try {
+        const checkDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+        if (!checkDoc.exists() || !checkDoc.data()?.active) {
+            console.log(`[Bot ${botId}] [BOT_DELETED_OR_INACTIVE] Bot não encontrado ou inativo no Firestore. Abortando startBot.`);
+            startingBots.delete(botId);
+            return;
+        }
+    } catch (e) {
+        console.error(`[Bot ${botId}] Erro ao validar bot no Firestore:`, e);
+        startingBots.delete(botId);
+        return;
+    }
+
     startingBots.add(botId);
     console.log(`[Bot ${botId}] [BOT_START] Iniciando bot...`);
 
@@ -338,6 +358,7 @@ async function startBot(botId: string) {
             
             if (qr) {
                 console.log(`[Bot ${botId}] [QR_RECEIVED] QR Code recebido do Baileys. Convertendo para DataURL...`);
+                connectionStatuses.set(botId, "QR_READY");
                 qrcode.toDataURL(qr, (err, url) => {
                     if (err) {
                         console.error(`[Bot ${botId}] Erro ao converter QR para DataURL:`, err);
@@ -350,19 +371,21 @@ async function startBot(botId: string) {
 
             if (connection === 'close') {
                 const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-                console.log(`[Bot ${botId}] [CONNECTION_CLOSE] Conexão fechada. Código: ${statusCode} (Razão: ${lastDisconnect?.error?.message || 'Desconhecida'})`);
+                const errMessage = lastDisconnect?.error?.message || '';
+                console.log(`[Bot ${botId}] [CONNECTION_CLOSE] Conexão fechada. Código: ${statusCode} (Razão: ${errMessage})`);
                 
-                connectionStatuses.set(botId, "Desconectado");
                 qrCodes.delete(botId);
                 activeSocks.delete(botId);
                 
                 const isLoggedOut = statusCode === DisconnectReason.loggedOut;
-                
+                const isQrExpired = statusCode === 408 || errMessage.includes('QR refs') || errMessage.includes('timedOut') || errMessage.includes('Connection Timeout');
+                const isRegistered = !!state.creds?.registered;
+
                 // Re-check if bot is still active in DB before reconnecting
                 const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
                 const currentBot = botDoc.data();
                 if (!currentBot || !currentBot.active) {
-                    console.log(`[Bot ${botId}] Bot desativado no banco, não irá reconectar.`);
+                    console.log(`[Bot ${botId}] Bot desativado ou apagado no banco, não irá reconectar.`);
                     startingBots.delete(botId);
                     return;
                 }
@@ -373,21 +396,49 @@ async function startBot(botId: string) {
                     if (fs.existsSync(authPath)) {
                         try { fs.rmSync(authPath, { recursive: true, force: true }); } catch {}
                     }
+                    connectionStatuses.set(botId, "Deslogado");
                     startingBots.delete(botId);
                     botReconnectAttempts.delete(botId);
                     clearBotSchedulers(botId);
+                } else if (isQrExpired && !isRegistered) {
+                    // QR expired without scan and never authenticated before
+                    console.log(`[Bot ${botId}] [QR_EXPIRED] QR Code expirado (Código 408 / QR refs attempts ended) sem autenticação prévia. Parando reconexão automática.`);
+                    connectionStatuses.set(botId, "QR_EXPIRED");
+                    startingBots.delete(botId);
+                    botReconnectAttempts.delete(botId);
                 } else {
-                    // Exponential backoff for 408 / network drop / timeout
+                    // Reconnection allowed only for previously authenticated bots or network drops after open
+                    connectionStatuses.set(botId, "Reconectando...");
                     const attempts = (botReconnectAttempts.get(botId) || 0) + 1;
                     botReconnectAttempts.set(botId, attempts);
                     const delay = Math.min(60000, 5000 * Math.pow(1.5, attempts - 1));
 
                     console.log(`[Bot ${botId}] [RECONNECT_SCHEDULED] Tentativa #${attempts} de reconexão em ${Math.round(delay/1000)}s...`);
-                    setTimeout(() => {
+                    
+                    if (reconnectTimers.has(botId)) {
+                        clearTimeout(reconnectTimers.get(botId));
+                    }
+
+                    const timer = setTimeout(async () => {
+                        reconnectTimers.delete(botId);
                         startingBots.delete(botId);
+
+                        // Double check active status before starting
+                        try {
+                            const checkDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+                            if (!checkDoc.exists() || !checkDoc.data()?.active) {
+                                console.log(`[Bot ${botId}] [RECONNECT_CANCELLED] Bot foi apagado ou desativado durante espera.`);
+                                return;
+                            }
+                        } catch (e) {
+                            return;
+                        }
+
                         console.log(`[Bot ${botId}] [RECONNECT_STARTED] Iniciando reconexão agendada...`);
                         startBot(botId);
                     }, delay);
+
+                    reconnectTimers.set(botId, timer);
                 }
             } else if (connection === 'open') {
                 console.log(`[Bot ${botId}] [CONNECTION_OPEN] Conexão estabelecida com sucesso!`);
@@ -395,6 +446,10 @@ async function startBot(botId: string) {
                 qrCodes.delete(botId);
                 startingBots.delete(botId);
                 botReconnectAttempts.set(botId, 0); // Reset attempts on successful connection
+                if (reconnectTimers.has(botId)) {
+                    clearTimeout(reconnectTimers.get(botId));
+                    reconnectTimers.delete(botId);
+                }
 
                 // Inicializa agendamentos diários dos grupos
                 initBotGroupSchedulers({
@@ -1752,7 +1807,14 @@ app.post('/api/bot/:id/reset', requireBotAuth, async (req, res) => {
 app.delete('/api/admin/bots/:id', async (req, res) => {
     const botId = req.params.id;
     try {
-        console.log(`[Admin] Apagando bot: ${botId}`);
+        console.log(`[Admin] [BOT_DELETED] Apagando bot: ${botId}`);
+
+        // Clear any scheduled reconnection timers
+        if (reconnectTimers.has(botId)) {
+            clearTimeout(reconnectTimers.get(botId));
+            reconnectTimers.delete(botId);
+        }
+        botReconnectAttempts.delete(botId);
 
         // Stop bot if running
         if (activeSocks.has(botId)) {
