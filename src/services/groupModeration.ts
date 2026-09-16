@@ -104,6 +104,47 @@ export function findForbiddenWords(text: string, badWords: string[]): string[] {
 }
 
 /**
+ * Helper to check if a group participant is the bot itself and has admin/superadmin role.
+ */
+export function isBotParticipantAdmin(sockUser: any, participant: any): boolean {
+  if (!participant) return false;
+  const isAdminRole = participant.admin === 'admin' || participant.admin === 'superadmin';
+  if (!isAdminRole) return false;
+
+  const pJid = participant.id || participant.jid || '';
+  const pLid = participant.lid || '';
+  
+  const botPhone = normalizePhone(sockUser?.id || sockUser?.jid);
+  const botLid = sockUser?.lid ? normalizePhone(sockUser.lid) : '';
+
+  const pPhone = normalizePhone(pJid);
+  const pLidPhone = pLid ? normalizePhone(pLid) : '';
+
+  if (botPhone && pPhone && isPhoneMatch(botPhone, pPhone)) {
+    return true;
+  }
+  if (botLid && pLidPhone && botLid === pLidPhone) {
+    return true;
+  }
+  if (botPhone && pJid.includes(botPhone)) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Invalidate in-memory group metadata cache.
+ */
+export function clearGroupMetaCache(groupId?: string) {
+  if (groupId) {
+    groupMetaCache.delete(groupId);
+  } else {
+    groupMetaCache.clear();
+  }
+}
+
+/**
  * Retrieves group metadata from Baileys with caching to minimize round-trips.
  */
 export async function getGroupMeta(sock: any, groupId: string, forceRefresh = false): Promise<GroupMetaCache | null> {
@@ -117,7 +158,6 @@ export async function getGroupMeta(sock: any, groupId: string, forceRefresh = fa
     const meta = await sock.groupMetadata(groupId);
     if (!meta) return null;
 
-    const botJid = sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : '';
     const admins = new Set<string>();
     let botIsAdmin = false;
 
@@ -126,9 +166,9 @@ export async function getGroupMeta(sock: any, groupId: string, forceRefresh = fa
       if (participant.admin === 'admin' || participant.admin === 'superadmin') {
         admins.add(pJid);
         admins.add(normalizePhone(pJid));
-        if (botJid && isPhoneMatch(pJid, botJid)) {
-          botIsAdmin = true;
-        }
+      }
+      if (isBotParticipantAdmin(sock.user, participant)) {
+        botIsAdmin = true;
       }
     }
 

@@ -32,7 +32,7 @@ import {
 } from './src/security';
 import { recordAuditLog, fetchAuditLogs } from './src/audit';
 import { handleWhatsAppAdminMessage } from './src/whatsappController';
-import { processGroupModeration, getGroupConfig, getGroupMeta, recordGroupLog } from './src/services/groupModeration';
+import { processGroupModeration, getGroupConfig, getGroupMeta, recordGroupLog, isBotParticipantAdmin, clearGroupMetaCache } from './src/services/groupModeration';
 import { initBotGroupSchedulers, clearBotSchedulers, scheduleGroupMotivation, sendDailyMotivationToGroup } from './src/services/groupScheduler';
 import { GroupConfig } from './src/types';
 
@@ -480,6 +480,27 @@ async function startBot(botId: string) {
         }
 
         const { id, participants, action } = anu;
+
+        // Atualiza metadata em tempo real e sincroniza se o privilégio de admin mudou
+        const meta = await getGroupMeta(sock, id, true);
+        if (meta) {
+            try {
+                const groupRef = doc(firestoreDb, 'bots', botId, 'groups', id);
+                await setDoc(groupRef, {
+                    botId,
+                    groupId: id,
+                    groupName: meta.subject || 'Grupo WhatsApp',
+                    groupDesc: meta.desc || '',
+                    participantCount: meta.size,
+                    botIsAdmin: meta.botIsAdmin,
+                    updatedAt: serverTimestamp()
+                }, { merge: true });
+                console.log(`[Bot ${botId}] Status do bot no grupo ${id} sincronizado: botIsAdmin=${meta.botIsAdmin}, acao=${action}`);
+            } catch (snapErr) {
+                console.error(`[Bot ${botId}] Erro ao atualizar status de admin no Firestore:`, snapErr);
+            }
+        }
+
         const groupConfig = await getGroupConfig(firestoreDb, botId, id);
         
         const shouldWelcome = groupConfig.welcomeEnabled ?? currentBot.groupWelcomeEnabled;
@@ -1505,19 +1526,39 @@ app.get('/api/bot/:id/groups', requireBotAuth, async (req, res) => {
         if (sock && connectionStatuses.get(botId) === 'Conectado') {
             try {
                 const participating = await sock.groupFetchAllParticipating();
-                const botJid = sock.user?.id ? sock.user.id.split(':')[0] : '';
 
                 for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
                     seenGroupIds.add(gId);
                     const participants = gMeta.participants || [];
-                    const botParticipant = participants.find((p: any) => {
-                        const pId = p.id || p.jid || '';
-                        return botJid && pId.includes(botJid);
-                    });
-                    const botIsAdmin = botParticipant?.admin === 'admin' || botParticipant?.admin === 'superadmin';
+                    
+                    let botIsAdmin = false;
+                    for (const p of participants) {
+                        if (isBotParticipantAdmin(sock.user, p)) {
+                            botIsAdmin = true;
+                            break;
+                        }
+                    }
+
+                    // Sincroniza estado no Firestore para persistência consistente
+                    try {
+                        const groupRef = doc(firestoreDb, 'bots', botId, 'groups', gId);
+                        await setDoc(groupRef, {
+                            botId,
+                            groupId: gId,
+                            groupName: gMeta.subject || 'Grupo WhatsApp',
+                            groupDesc: gMeta.desc?.toString() || '',
+                            participantCount: participants.length,
+                            botIsAdmin,
+                            updatedAt: serverTimestamp()
+                        }, { merge: true });
+                    } catch (syncErr) {
+                        console.error(`[Bot ${botId}] Erro ao sincronizar grupo ${gId} no Firestore:`, syncErr);
+                    }
 
                     // Carrega ou inicializa config no Firestore
                     const config = await getGroupConfig(firestoreDb, botId, gId, gMeta.subject);
+                    config.botIsAdmin = botIsAdmin;
+                    config.participantCount = participants.length;
 
                     groupList.push({
                         groupId: gId,
@@ -1571,8 +1612,24 @@ app.get('/api/bot/:id/groups/:groupId', requireBotAuth, async (req, res) => {
 
         const sock = activeSocks.get(botId);
         let meta = null;
-        if (sock) {
-            meta = await getGroupMeta(sock, groupId);
+        if (sock && connectionStatuses.get(botId) === 'Conectado') {
+            meta = await getGroupMeta(sock, groupId, true);
+            if (meta) {
+                try {
+                    const groupRef = doc(firestoreDb, 'bots', botId, 'groups', groupId);
+                    await setDoc(groupRef, {
+                        botId,
+                        groupId,
+                        groupName: meta.subject,
+                        groupDesc: meta.desc || '',
+                        participantCount: meta.size,
+                        botIsAdmin: meta.botIsAdmin,
+                        updatedAt: serverTimestamp()
+                    }, { merge: true });
+                } catch (sErr) {
+                    console.error(`[Bot ${botId}] Erro ao atualizar metadata de ${groupId}:`, sErr);
+                }
+            }
         }
 
         const config = await getGroupConfig(firestoreDb, botId, groupId, meta?.subject);
@@ -1587,13 +1644,18 @@ app.get('/api/bot/:id/groups/:groupId', requireBotAuth, async (req, res) => {
         const logsSnap = await getDocs(logsQuery);
         const recentLogs = logsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
 
+        const finalBotIsAdmin = meta !== null ? meta.botIsAdmin : (config.botIsAdmin || false);
+
         res.json({
             groupId,
             groupName: meta?.subject || config.groupName,
             groupDesc: meta?.desc || config.groupDesc || '',
             participantCount: meta?.size || config.participantCount || 0,
-            botIsAdmin: meta?.botIsAdmin || false,
-            config,
+            botIsAdmin: finalBotIsAdmin,
+            config: {
+                ...config,
+                botIsAdmin: finalBotIsAdmin
+            },
             activeWarnings,
             recentLogs
         });
