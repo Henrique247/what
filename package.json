@@ -8,12 +8,14 @@
     "start": "node server.ts",
     "build": "tsc",
     "clean": "rm -rf dist",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "postinstall": "rm -rf node_modules/@whiskeysockets/baileys/node_modules/libsignal"
   },
   "dependencies": {
     "@google/genai": "^1.43.0",
     "@hapi/boom": "^10.0.1",
     "@tailwindcss/vite": "^4.1.14",
+    "@types/pdfkit": "^0.17.5",
     "@vitejs/plugin-react": "^5.0.4",
     "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "better-sqlite3": "^12.4.1",
@@ -22,10 +24,12 @@
     "express": "^4.21.2",
     "firebase": "^12.10.0",
     "firebase-admin": "^13.7.0",
+    "libsignal": "github:whiskeysockets/libsignal-node",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "multer": "^2.1.0",
     "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.17.2",
     "pino": "^10.3.1",
     "qrcode": "^1.5.4",
     "react": "^19.0.0",

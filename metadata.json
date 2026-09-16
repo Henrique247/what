@@ -1,5 +1,6 @@
 {
   "name": "TechStar SaaS Multi-Bot",
   "description": "Plataforma SaaS para criação e gerenciamento de múltiplos bots de WhatsApp inteligentes com Gemini AI.",
-  "requestFramePermissions": []
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

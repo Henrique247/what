@@ -24,9 +24,32 @@
         "privateExitEnabled": { "type": "boolean" },
         "memoryEnabled": { "type": "boolean" },
         "analysisEnabled": { "type": "boolean" },
-        "analysisInstructions": { "type": "string" }
+        "analysisInstructions": { "type": "string" },
+        "ownerName": { "type": "string" },
+        "ownerNumber": { "type": "string" },
+        "ownerId": { "type": "string" },
+        "ownerPhone": { "type": "string" },
+        "ownerPermissions": { "type": "array" },
+        "accessToken": { "type": "string" }
       },
       "required": ["id", "name"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Administrative audit trail for a bot",
+      "type": "object",
+      "properties": {
+        "botId": { "type": "string" },
+        "userId": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string", "enum": ["OWNER", "ADMIN", "USER"] },
+        "action": { "type": "string" },
+        "command": { "type": "string" },
+        "result": { "type": "string", "enum": ["SUCCESS", "DENIED", "ERROR"] },
+        "details": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["botId", "role", "action", "result", "timestamp"]
     },
     "History": {
       "title": "History",
@@ -50,6 +73,10 @@
     "/bots/{botId}/history/{historyId}": {
       "schema": "History",
       "description": "Chat history for a specific bot"
+    },
+    "/bots/{botId}/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Audit logs for administrative operations on a bot"
     }
   }
 }

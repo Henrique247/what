@@ -28,6 +28,12 @@ service cloud.firestore {
     //   - memoryEnabled: bool
     //   - analysisEnabled: bool
     //   - analysisInstructions: string
+    //   - ownerName: string
+    //   - ownerNumber: string
+    //   - ownerId: string
+    //   - ownerPhone: string
+    //   - ownerPermissions: list
+    //   - accessToken: string
     //
     // Subcollection: bots/{botId}/history
     // Document ID: historyId
@@ -36,6 +42,15 @@ service cloud.firestore {
     //   - jid: string
     //   - role: string (user/model)
     //   - text: string
+    //   - timestamp: timestamp
+    //
+    // Subcollection: bots/{botId}/audit_logs
+    // Document ID: logId
+    // Fields:
+    //   - botId: string
+    //   - role: string
+    //   - action: string
+    //   - result: string
     //   - timestamp: timestamp
     //
     // ===============================================================
@@ -48,6 +63,10 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() &&
         (request.auth.token.email == "mendeshenrique158@gmail.com" && request.auth.token.email_verified == true);
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
     }
 
     // Validation Functions
@@ -63,9 +82,32 @@ service cloud.firestore {
              data.timestamp is timestamp;
     }
 
-    // Rules
+    function isValidAuditLog(data) {
+      return data.keys().hasAll(['botId', 'role', 'action', 'result', 'timestamp']) &&
+             data.botId is string && data.role is string &&
+             data.action is string && data.result is string &&
+             data.timestamp is timestamp;
+    }
+
+    // Bots collection & subcollections
+    match /bots/{botId} {
+      allow get, create, update, delete: if isValidId(botId);
+      allow list: if true;
+
+      match /history/{historyId} {
+        allow get, create, update, delete: if isValidId(historyId);
+        allow list: if true;
+      }
+
+      match /audit_logs/{logId} {
+        allow get, create, update, delete: if isValidId(logId);
+        allow list: if true;
+      }
+    }
+
+    // Global Default-Deny: Prevent all other unauthorized public paths
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }
