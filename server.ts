@@ -38,6 +38,13 @@ import { resolveOwnWhatsAppIdentity, isSelfIdentity, findBotParticipant, checkIs
 import { initBotGroupSchedulers, clearBotSchedulers, scheduleGroupMotivation, sendDailyMotivationToGroup } from './src/services/groupScheduler';
 import { GroupConfig } from './src/types';
 import { 
+    getBotGroups, 
+    getBotGroupSummary, 
+    getBotOperationalContext, 
+    generateOperationalSystemPromptSnippet, 
+    handleOperationalKnowledgeQuery 
+} from './src/services/botKnowledgeService';
+import { 
     resolveMessageDestination, 
     sendBotMessage, 
     extractMediaMessage, 
@@ -877,9 +884,40 @@ async function startBot(botId: string) {
                     });
                 }
 
+                const isOwner = !!(
+                    (currentBot.ownerNumber && (targetChatJid.includes(currentBot.ownerNumber) || senderJid.includes(currentBot.ownerNumber))) ||
+                    (senderPn && currentBot.ownerNumber && isPhoneMatch(senderPn, currentBot.ownerNumber)) ||
+                    (senderLid && currentBot.ownerLid && senderLid.toLowerCase() === currentBot.ownerLid.toLowerCase())
+                );
+
+                // Intercept direct factual queries about the bot (groups, admin status, ownership, identity, stats)
+                if (cleanText) {
+                    const opQueryResult = await handleOperationalKnowledgeQuery({
+                        text: cleanText,
+                        botId,
+                        firestoreDb,
+                        sock,
+                        currentBot,
+                        senderJid,
+                        senderPn,
+                        senderLid,
+                        isOwner,
+                        chatType,
+                        destinationJid: targetChatJid,
+                        sendReply: (content, options) => safeSendMessage(botId, targetChatJid, content, options, {
+                            actionName: 'OPERATIONAL_FACTUAL_REPLY',
+                            chatType,
+                            messageId: msg.key?.id
+                        })
+                    });
+
+                    if (opQueryResult.handled) {
+                        continue;
+                    }
+                }
+
                 const geminiKeysConfig = currentBot.geminiKeys || currentBot.geminiKey || process.env.GEMINI_API_KEY || "";
                 const hasGeminiKeys = !!geminiKeysConfig.trim();
-                const isOwner = !!(currentBot.ownerNumber && (targetChatJid.includes(currentBot.ownerNumber) || senderJid.includes(currentBot.ownerNumber)));
 
                 // Log AI_PROCESSING_CHECK before invoking model
                 await recordAuditLog(firestoreDb, {
@@ -975,14 +1013,27 @@ async function startBot(botId: string) {
 
                 await saveMessage(botId, targetChatJid, 'user', cleanText || "[Mídia enviada]");
 
+                // Obtain real-time operational context (groups, admin status, identity) to ground Gemini responses
+                const opContext = await getBotOperationalContext({
+                    botId,
+                    firestoreDb,
+                    sock,
+                    currentBot,
+                    senderJid,
+                    senderPn,
+                    senderLid,
+                    isOwner
+                });
+                const operationalInstruction = generateOperationalSystemPromptSnippet(opContext);
+
                 let ownerInstruction = "";
                 if (isOwner) {
-                    ownerInstruction = `\n\nVOCÊ ESTÁ FALANDO COM SEU PROPRIETÁRIO: ${currentBot.ownerName || 'Proprietário'}. Ele tem permissão total. Se ele pedir relatórios, resumos ou informações sobre o sistema, forneça-os de forma clara e detalhada.`;
+                    ownerInstruction = `\n\nVOCÊ ESTÁ FALANDO COM SEU PROPRIETÁRIO: ${currentBot.ownerName || 'Proprietário'}. Ele tem permissão total e controle administrativo sobre o bot.`;
                 }
 
                 const pdfInstruction = "\n\nSe o usuário solicitar um PDF ou se você achar que a resposta deve ser um documento formal, escreva o conteúdo que deve ir no PDF entre as tags <pdf> e </pdf>. O sistema converterá automaticamente esse conteúdo em um arquivo PDF e enviará ao usuário.";
                 const baseSystemPrompt = currentBot.systemPrompt || "Você é um assistente útil e prestativo. Responda de forma clara, natural e objetiva.";
-                const fullSystemPrompt = `${baseSystemPrompt}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
+                const fullSystemPrompt = `${baseSystemPrompt}${operationalInstruction}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
                 
                 await recordAuditLog(firestoreDb, {
                     botId,

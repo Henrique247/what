@@ -18,6 +18,7 @@ import { scheduleGroupMotivation } from './services/groupScheduler';
 import { GroupConfig } from './types';
 import { deleteLastBotMessage } from './services/whatsappPipeline';
 import { syncBotGroups } from './services/whatsappIdentity';
+import { getBotGroups, getBotGroupSummary, classifyOperationalIntent } from './services/botKnowledgeService';
 
 export interface PendingConfirmation {
     action: 'CLEAR_KNOWLEDGE' | 'CLEAR_HISTORY' | 'RESET_SESSION' | 'UPDATE_WELCOME_MSG';
@@ -757,15 +758,12 @@ export async function executeGroupListCommand(params: {
     });
 
     try {
-        if (!sock) {
-            throw new Error('Sessão WhatsApp desconectada');
-        }
-
-        const allGroups = await syncBotGroups(botId, sock, firestoreDb, currentBot);
+        const allGroups = await getBotGroups(botId, firestoreDb, sock, currentBot);
         const groups = allGroups.map((g: any) => ({
             id: g.groupId,
             subject: (g.groupName || 'Grupo WhatsApp').trim(),
-            isAdmin: !!g.botIsAdmin
+            isAdmin: !!g.botIsAdmin,
+            participantCount: g.participantCount || 0
         }));
 
         await recordAuditLog(firestoreDb, {
@@ -777,7 +775,7 @@ export async function executeGroupListCommand(params: {
             result: 'SUCCESS',
             chatId: replyDestination,
             duration: Date.now() - startTime,
-            details: `Consultados ${groups.length} grupos reais do bot via Baileys`
+            details: `Consultados ${groups.length} grupos reais do bot`
         });
 
         if (groups.length === 0) {
@@ -787,14 +785,19 @@ export async function executeGroupListCommand(params: {
             return;
         }
 
-        let out = `📋 *GRUPOS DO BOT*\nTotal: ${groups.length}\n`;
-        groups.forEach((g, idx) => {
-            out += `\n${idx + 1}. *${g.subject}*\n   ${g.isAdmin ? '👑 Administrador' : '👤 Membro'}`;
+        const displayLimit = 30;
+        let out = `📋 *GRUPOS DO BOT*\nTotal: *${groups.length}* grupos\n`;
+        groups.slice(0, displayLimit).forEach((g, idx) => {
+            out += `\n${idx + 1}. *${g.subject}* (${g.participantCount} membros)\n   ${g.isAdmin ? '👑 Administrador' : '👤 Membro'}`;
         });
+
+        if (groups.length > displayLimit) {
+            out += `\n\n... e mais ${groups.length - displayLimit} grupos.`;
+        }
 
         await sendReply({ text: out });
     } catch (err: any) {
-        const errorMsg = err?.message || 'Falha na comunicação com o WhatsApp';
+        const errorMsg = err?.message || 'Falha na comunicação com o banco de dados';
         await recordAuditLog(firestoreDb, {
             botId,
             actorId: actorJid,
@@ -809,7 +812,7 @@ export async function executeGroupListCommand(params: {
         });
 
         await sendReply({
-            text: `Não consegui consultar os grupos neste momento.\nErro técnico: ${errorMsg}`
+            text: `Neste momento não consegui consultar a lista atualizada de grupos.\nErro técnico: ${errorMsg}`
         });
     }
 }
@@ -838,16 +841,13 @@ export async function executeAdminGroupsCommand(params: {
     });
 
     try {
-        if (!sock) {
-            throw new Error('Sessão WhatsApp desconectada');
-        }
-
-        const allGroups = await syncBotGroups(botId, sock, firestoreDb, currentBot);
+        const allGroups = await getBotGroups(botId, firestoreDb, sock, currentBot);
         const adminGroups = allGroups
             .filter((g: any) => g.botIsAdmin)
             .map((g: any) => ({
                 id: g.groupId,
-                subject: (g.groupName || 'Grupo WhatsApp').trim()
+                subject: (g.groupName || 'Grupo WhatsApp').trim(),
+                participantCount: g.participantCount || 0
             }));
 
         await recordAuditLog(firestoreDb, {
@@ -859,24 +859,29 @@ export async function executeAdminGroupsCommand(params: {
             result: 'SUCCESS',
             chatId: replyDestination,
             duration: Date.now() - startTime,
-            details: `Consultados ${adminGroups.length} grupos onde o bot é admin via Baileys (${allGroups.length} grupos no total)`
+            details: `Consultados ${adminGroups.length} grupos onde o bot é admin (${allGroups.length} grupos no total)`
         });
 
         if (adminGroups.length === 0) {
             await sendReply({
-                text: `👑 *GRUPOS ONDE SOU ADMIN*\nTotal: 0\n\nO bot não possui privilégios de Administrador em nenhum grupo no momento.`
+                text: `👑 *GRUPOS ONDE SOU ADMIN*\nTotal: 0 de ${allGroups.length} grupos\n\nO bot não possui privilégios de Administrador em nenhum grupo no momento.`
             });
             return;
         }
 
-        let out = `👑 *GRUPOS ONDE SOU ADMIN*\nTotal: ${adminGroups.length}\n`;
-        adminGroups.forEach((g) => {
-            out += `\n• ${g.subject}`;
+        const displayLimit = 30;
+        let out = `👑 *GRUPOS ONDE SOU ADMIN*\nTotal: *${adminGroups.length}* de *${allGroups.length}* grupos\n`;
+        adminGroups.slice(0, displayLimit).forEach((g, idx) => {
+            out += `\n${idx + 1}. *${g.subject}* (${g.participantCount} membros)`;
         });
+
+        if (adminGroups.length > displayLimit) {
+            out += `\n\n... e mais ${adminGroups.length - displayLimit} outros grupos administrados.`;
+        }
 
         await sendReply({ text: out });
     } catch (err: any) {
-        const errorMsg = err?.message || 'Falha na comunicação com o WhatsApp';
+        const errorMsg = err?.message || 'Falha na comunicação com o banco de dados';
         await recordAuditLog(firestoreDb, {
             botId,
             actorId: actorJid,
@@ -891,7 +896,7 @@ export async function executeAdminGroupsCommand(params: {
         });
 
         await sendReply({
-            text: `Não consegui consultar os grupos de administrador neste momento.\nErro técnico: ${errorMsg}`
+            text: `Neste momento não consegui consultar os grupos de administrador.\nErro técnico: ${errorMsg}`
         });
     }
 }
