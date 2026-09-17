@@ -254,20 +254,6 @@ const activeSocks = new Map<string, any>();
 const qrCodes = new Map<string, string>();
 const connectionStatuses = new Map<string, string>();
 
-function getGenAIInstances(keysStr: string) {
-    let keys = keysStr ? keysStr.split(',').map(k => k.trim()).filter(k => k !== "") : [];
-    // Fallback to server-wide GEMINI_API_KEY environment variable if no bot-specific keys set
-    if (keys.length === 0 && process.env.GEMINI_API_KEY) {
-        keys = process.env.GEMINI_API_KEY.split(',').map(k => k.trim()).filter(k => k !== "");
-    }
-    return keys.map((k: string) => {
-        const cleanKey = k.trim().replace(/["']/g, '');
-        return cleanKey ? new GoogleGenAI({ apiKey: cleanKey }) : null;
-    }).filter(ai => ai !== null);
-}
-
-const currentKeyIndexes = new Map<string, number>();
-
 const startingBots = new Set<string>();
 const botReconnectAttempts = new Map<string, number>();
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
