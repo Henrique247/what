@@ -329,6 +329,11 @@ export async function sendBotMessage(
             details: `Mensagem (${payloadSummary}) enviada com sucesso em ${latencyMs}ms`
         });
 
+        // Track last sent message for deterministic delete operations
+        if (sendResult?.key?.id) {
+            recordLastSentMessage(botId, destinationJid, sendResult.key);
+        }
+
         return true;
     } catch (err: any) {
         const latencyMs = Date.now() - startTime;
@@ -352,5 +357,140 @@ export async function sendBotMessage(
         });
 
         return false;
+    }
+}
+
+export interface LastSentMessageInfo {
+    key: {
+        remoteJid?: string | null;
+        fromMe?: boolean | null;
+        id?: string | null;
+        participant?: string | null;
+    };
+    timestamp: number;
+    destinationJid: string;
+}
+
+const lastSentMessagesMap = new Map<string, LastSentMessageInfo>();
+
+export function recordLastSentMessage(botId: string, destinationJid: string, key: any) {
+    if (!key || !key.id) return;
+    const cacheKey = `${botId}:${destinationJid}`;
+    lastSentMessagesMap.set(cacheKey, {
+        key: {
+            remoteJid: key.remoteJid || destinationJid,
+            fromMe: true,
+            id: key.id,
+            participant: key.participant || undefined
+        },
+        timestamp: Date.now(),
+        destinationJid
+    });
+}
+
+const activeSocksRegistry = new Map<string, any>();
+
+export function registerActiveSock(botId: string, sock: any) {
+    if (sock) {
+        activeSocksRegistry.set(botId, sock);
+    } else {
+        activeSocksRegistry.delete(botId);
+    }
+}
+
+export function getActiveSock(botId: string): any {
+    return activeSocksRegistry.get(botId);
+}
+
+export function getLastSentMessage(botId: string, destinationJid: string): LastSentMessageInfo | undefined {
+    return lastSentMessagesMap.get(`${botId}:${destinationJid}`);
+}
+
+/**
+ * Operação determinística para apagar a última mensagem enviada pelo bot.
+ * Utiliza o protocolo nativo de revogação do Baileys/WhatsApp.
+ */
+export async function deleteLastBotMessage(params: {
+    botId: string;
+    destinationJid: string;
+    actorJid: string;
+    actorRole: 'OWNER' | 'ADMIN' | 'USER';
+    firestoreDb: Firestore;
+    sock?: any;
+    getActiveSock?: (botId: string) => any;
+}): Promise<{ success: boolean; message: string; errorCode?: string }> {
+    const { botId, destinationJid, actorJid, actorRole, firestoreDb } = params;
+    const sock = params.sock || (params.getActiveSock ? params.getActiveSock(botId) : getActiveSock(botId));
+    if (!sock) {
+        return { success: false, message: 'Bot não está conectado ao WhatsApp no momento.', errorCode: 'BOT_OFFLINE' };
+    }
+
+    const lastMsg = getLastSentMessage(botId, destinationJid);
+    if (!lastMsg || !lastMsg.key || !lastMsg.key.id) {
+        return { success: false, message: 'Não encontrei nenhuma mensagem recente enviada pelo bot para apagar neste chat.', errorCode: 'NO_RECENT_MESSAGE' };
+    }
+
+    // Limite de segurança: WhatsApp permite apagar mensagens com até ~48h
+    const ageMs = Date.now() - lastMsg.timestamp;
+    if (ageMs > 48 * 60 * 60 * 1000) {
+        return { success: false, message: 'A mensagem mais recente do bot é muito antiga para ser apagada no WhatsApp.', errorCode: 'MESSAGE_TOO_OLD' };
+    }
+
+    await recordAuditLog(firestoreDb, {
+        botId,
+        actorId: actorJid,
+        actorRole,
+        action: 'MESSAGE_DELETE_ATTEMPT',
+        result: 'SUCCESS',
+        chatId: destinationJid,
+        destinationJid,
+        remoteJid: destinationJid,
+        messageId: lastMsg.key.id,
+        details: `Tentativa de apagar mensagem anterior enviada pelo bot (ID: ${lastMsg.key.id})`
+    });
+
+    try {
+        await sock.sendMessage(destinationJid, {
+            delete: lastMsg.key
+        });
+
+        // Limpa cache da mensagem após exclusão bem-sucedida
+        lastSentMessagesMap.delete(`${botId}:${destinationJid}`);
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: actorJid,
+            actorRole,
+            action: 'MESSAGE_DELETE_SUCCESS',
+            result: 'SUCCESS',
+            chatId: destinationJid,
+            destinationJid,
+            remoteJid: destinationJid,
+            messageId: lastMsg.key.id,
+            details: `Mensagem (ID: ${lastMsg.key.id}) apagada com sucesso no WhatsApp`
+        });
+
+        return { success: true, message: 'Mensagem apagada com sucesso.' };
+    } catch (err: any) {
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: actorJid,
+            actorRole,
+            action: 'MESSAGE_DELETE_FAILED',
+            result: 'ERROR',
+            chatId: destinationJid,
+            destinationJid,
+            remoteJid: destinationJid,
+            messageId: lastMsg.key.id,
+            errorCode: 'DELETE_ERROR',
+            errorMessage: err?.message || 'Falha ao deletar mensagem',
+            details: `WhatsApp recusou a exclusão da mensagem: ${err?.message || 'Erro desconhecido'}`
+        });
+
+        return {
+            success: false,
+            message: `Não consegui apagar a mensagem porque o WhatsApp não permitiu esta operação neste contexto.`,
+            errorCode: 'WHATSAPP_REJECTED'
+        };
     }
 }

@@ -30,6 +30,8 @@ export interface AuditLogEntry {
     mediaType?: string;
     payloadSummary?: string;
     latencyMs?: number;
+    duration?: number;
+    actorJid?: string;
     fieldsChanged?: string[];
     oldValue?: any;
     newValue?: any;
@@ -105,6 +107,8 @@ export async function recordAuditLog(firestoreDb: Firestore, entry: AuditLogEntr
         if (entry.mediaType) docData.mediaType = entry.mediaType;
         if (entry.payloadSummary) docData.payloadSummary = entry.payloadSummary;
         if (entry.latencyMs !== undefined) docData.latencyMs = entry.latencyMs;
+        if (entry.duration !== undefined) docData.duration = entry.duration;
+        if (entry.actorJid) docData.actorJid = entry.actorJid;
         if (entry.fieldsChanged) docData.fieldsChanged = entry.fieldsChanged;
         if (entry.oldValue !== undefined) docData.oldValue = sanitizeValue(entry.oldValue);
         if (entry.newValue !== undefined) docData.newValue = sanitizeValue(entry.newValue);

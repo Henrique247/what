@@ -138,6 +138,11 @@ service cloud.firestore {
       allow list: if true;
     }
 
+    // Audit logs collection group support
+    match /{path=**}/audit_logs/{logId} {
+      allow read, write: if isValidId(logId);
+    }
+
     // Global Default-Deny: Prevent all other unauthorized public paths
     match /{document=**} {
       allow read, write: if false;

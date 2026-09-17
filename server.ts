@@ -33,6 +33,7 @@ import {
 import { recordAuditLog, fetchAuditLogs } from './src/audit';
 import { handleWhatsAppAdminMessage } from './src/whatsappController';
 import { processGroupModeration, getGroupConfig, getGroupMeta, recordGroupLog, isBotParticipantAdmin, clearGroupMetaCache } from './src/services/groupModeration';
+import { resolveOwnWhatsAppIdentity, isSelfIdentity, findBotParticipant, checkIsMentionedOrReply, syncBotGroups } from './src/services/whatsappIdentity';
 import { initBotGroupSchedulers, clearBotSchedulers, scheduleGroupMotivation, sendDailyMotivationToGroup } from './src/services/groupScheduler';
 import { GroupConfig } from './src/types';
 import { 
@@ -40,7 +41,8 @@ import {
     sendBotMessage, 
     extractMediaMessage, 
     hasValidMediaKey, 
-    isAllowedDestination 
+    isAllowedDestination,
+    registerActiveSock
 } from './src/services/whatsappPipeline';
 
 const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
@@ -332,6 +334,7 @@ async function resetBotSession(botId: string) {
             sock.end(undefined);
         } catch(e) {}
         activeSocks.delete(botId);
+        registerActiveSock(botId, null);
     }
     const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
     if (fs.existsSync(authPath)) {
@@ -414,6 +417,7 @@ async function startBot(botId: string) {
         });
 
         activeSocks.set(botId, sock);
+        registerActiveSock(botId, sock);
         connectionStatuses.set(botId, "Conectando...");
 
         sock.ev.on('creds.update', saveCreds);
@@ -441,6 +445,7 @@ async function startBot(botId: string) {
                 
                 qrCodes.delete(botId);
                 activeSocks.delete(botId);
+                registerActiveSock(botId, null);
                 
                 const isLoggedOut = statusCode === DisconnectReason.loggedOut;
                 const isQrExpired = statusCode === 408 || errMessage.includes('QR refs') || errMessage.includes('timedOut') || errMessage.includes('Connection Timeout');
@@ -515,6 +520,11 @@ async function startBot(botId: string) {
                     clearTimeout(reconnectTimers.get(botId));
                     reconnectTimers.delete(botId);
                 }
+
+                // Sincronização automática e precisa dos grupos onde o bot participa/é admin
+                syncBotGroups(botId, sock, firestoreDb, bot).catch(err => 
+                    console.error(`[Bot ${botId}] Erro ao sincronizar grupos na conexão:`, err)
+                );
 
                 // Inicializa agendamentos diários dos grupos
                 initBotGroupSchedulers({
@@ -684,20 +694,50 @@ async function startBot(botId: string) {
                 const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || "";
                 const cleanText = (text || '').trim();
 
-                // If message is fromMe (sent by bot or from phone app using bot number)
-                if (msg.key.fromMe) {
-                    if (cleanText.startsWith('/') || cleanText.startsWith('!')) {
-                        // Allow owner slash commands sent directly from WhatsApp on phone
-                    } else {
-                        // Ignore general self messages to prevent loops
-                        continue;
-                    }
-                }
-
                 // Reload bot config for each message
                 const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
                 const currentBot = botDoc.data();
                 if (!currentBot || !currentBot.active) continue;
+
+                const identity = await resolveOwnWhatsAppIdentity(sock, currentBot, botId, firestoreDb);
+                const isFromSelf = !!msg.key.fromMe || isSelfIdentity(senderJid, identity, sock);
+
+                // If message is fromMe (sent by bot or from phone app using bot number)
+                if (isFromSelf) {
+                    if (cleanText.startsWith('/') || cleanText.startsWith('!')) {
+                        // Allow owner slash commands sent directly from WhatsApp on phone
+                    } else {
+                        // Ignore general self messages to prevent loops
+                        if (isGroup) {
+                            console.log('[GROUP_MESSAGE_SKIPPED]', { botId, groupId: remoteJid, reason: 'MESSAGE_FROM_SELF' });
+                        }
+                        continue;
+                    }
+                }
+
+                // Check group meta & status for logs
+                const meta = isGroup ? await getGroupMeta(sock, remoteJid, false, currentBot, botId) : null;
+                const { isMentioned, isReplyToBot } = checkIsMentionedOrReply({
+                    messageObj: msg.message,
+                    rawText: text,
+                    identity,
+                    sock
+                });
+
+                if (isGroup) {
+                    console.log('[GROUP_MESSAGE_RECEIVED]', {
+                        botId,
+                        messageId: msg.key?.id,
+                        remoteJid,
+                        participant: participantJid || senderJid,
+                        chatType,
+                        isGroup: true,
+                        respondInGroups: currentBot.respondInGroups !== false && currentBot.respondInGroups !== 0,
+                        isBotAdmin: !!(meta?.botIsAdmin),
+                        isMentioned,
+                        isReplyToBot
+                    });
+                }
 
                 // Intercept administrative commands and owner management intents via WhatsApp
                 const adminResult = await handleWhatsAppAdminMessage({
@@ -708,6 +748,8 @@ async function startBot(botId: string) {
                     groupId: isGroup ? remoteJid : undefined,
                     destinationJid: targetChatJid,
                     senderPn,
+                    senderLid,
+                    fromMe: isFromSelf,
                     text: cleanText,
                     messageObj: msg.message,
                     firestoreDb,
@@ -741,29 +783,35 @@ async function startBot(botId: string) {
                     }
                 }
 
-                // Detect mentions and replies to the bot
-                const botPhone = sock.user?.id ? normalizePhone(sock.user.id) : '';
-                const contextInfo = msg.message.extendedTextMessage?.contextInfo || msg.message.imageMessage?.contextInfo || msg.message.documentMessage?.contextInfo;
-                const isMentioned = contextInfo?.mentionedJid?.some((mJid: string) => isPhoneMatch(normalizePhone(mJid), botPhone)) || (text && botPhone && text.includes(botPhone));
-                const isReplyToBot = contextInfo?.participant && isPhoneMatch(normalizePhone(contextInfo.participant), botPhone);
-
                 // Check for media
                 const mediaInfo = extractMediaMessage(msg.message);
                 const isImage = messageType === 'imageMessage' || mediaInfo?.mediaType === 'image';
                 const isDocument = messageType === 'documentMessage' || mediaInfo?.mediaType === 'document';
                 const isPdf = isDocument && (msg.message.documentMessage?.mimetype === 'application/pdf' || (mediaInfo?.mediaObj as any)?.mimetype === 'application/pdf');
 
-                if ((isImage || isPdf) && !currentBot.analysisEnabled) continue;
-                if (!cleanText && !isImage && !isPdf) continue;
+                if ((isImage || isPdf) && !currentBot.analysisEnabled) {
+                    if (isGroup) console.log('[GROUP_MESSAGE_SKIPPED]', { botId, groupId: remoteJid, reason: 'MEDIA_ANALYSIS_DISABLED' });
+                    continue;
+                }
+                if (!cleanText && !isImage && !isPdf) {
+                    if (isGroup) console.log('[GROUP_MESSAGE_SKIPPED]', { botId, groupId: remoteJid, reason: 'EMPTY_TEXT_AND_NO_MEDIA' });
+                    continue;
+                }
 
-                // Check if bot should respond in this context
-                if (isGroup && !currentBot.respondInGroups && !isMentioned && !isReplyToBot) continue;
                 if (!isGroup && !currentBot.respondInPrivate) continue;
 
                 // Handle private exit command
                 if (!isGroup && cleanText.toLowerCase() === '!sair' && currentBot.privateExitEnabled) {
                     await safeSendMessage(botId, targetChatJid, { text: currentBot.exitMsg || "Até logo!" });
                     continue;
+                }
+
+                if (isGroup) {
+                    console.log('[GROUP_MESSAGE_PROCESSING]', {
+                        botId,
+                        groupId: remoteJid,
+                        textLength: cleanText.length
+                    });
                 }
 
                 const genAIs = getGenAIInstances(currentBot.geminiKeys || "");
@@ -925,6 +973,14 @@ async function startBot(botId: string) {
                         }
                     } else {
                         await safeSendMessage(botId, targetChatJid, { text: responseText });
+                    }
+
+                    if (isGroup) {
+                        console.log('[GROUP_REPLY_SENT]', {
+                            botId,
+                            destinationJid: targetChatJid,
+                            messageId: msg.key?.id
+                        });
                     }
                 }
             } catch (e: any) {
@@ -1649,6 +1705,8 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
         if (exitMsg !== undefined) updatePayload.exitMsg = exitMsg;
         if (knowledgeBase !== undefined) updatePayload.knowledgeBase = knowledgeBase;
         if (ownerName !== undefined) updatePayload.ownerName = ownerName;
+        if (req.body.ownerLid !== undefined) updatePayload.ownerLid = req.body.ownerLid;
+        if (req.body.ownerJid !== undefined) updatePayload.ownerJid = req.body.ownerJid;
         if (ownerNumber !== undefined) {
             updatePayload.ownerNumber = ownerNumber;
             updatePayload.ownerPhone = normalizePhone(ownerNumber);
@@ -1787,85 +1845,22 @@ app.get('/api/bot/:id/admin-groups', requireBotAuth, async (req, res) => {
         }
 
         const sock = activeSocks.get(botId);
-        const adminGroups: any[] = [];
-
-        if (sock && connectionStatuses.get(botId) === 'Conectado') {
-            try {
-                const participating = await sock.groupFetchAllParticipating();
-
-                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
-                    const participants = gMeta.participants || [];
-                    let botIsAdmin = false;
-                    let botRole: 'admin' | 'superadmin' | 'member' = 'member';
-
-                    for (const p of participants) {
-                        if (isBotParticipantAdmin(sock.user, p)) {
-                            botIsAdmin = true;
-                            botRole = p.admin === 'superadmin' ? 'superadmin' : 'admin';
-                            break;
-                        }
-                    }
-
-                    if (botIsAdmin) {
-                        const groupRef = doc(firestoreDb, 'bots', botId, 'groups', gId);
-                        await setDoc(groupRef, {
-                            botId,
-                            groupId: gId,
-                            groupName: gMeta.subject || 'Grupo WhatsApp',
-                            groupDesc: gMeta.desc?.toString() || '',
-                            participantCount: participants.length,
-                            botIsAdmin: true,
-                            botRole,
-                            updatedAt: serverTimestamp()
-                        }, { merge: true });
-
-                        const config = await getGroupConfig(firestoreDb, botId, gId, gMeta.subject);
-                        config.botIsAdmin = true;
-                        config.participantCount = participants.length;
-
-                        adminGroups.push({
-                            groupId: gId,
-                            groupName: gMeta.subject || config.groupName || 'Grupo WhatsApp',
-                            groupDesc: gMeta.desc?.toString() || config.groupDesc || '',
-                            participantCount: participants.length,
-                            botIsAdmin: true,
-                            botRole,
-                            canDeleteMessages: true,
-                            canKickParticipants: true,
-                            canEditGroupInfo: true,
-                            lastSyncedAt: new Date().toISOString(),
-                            config
-                        });
-                    }
-                }
-            } catch (sockErr: any) {
-                console.warn(`[Bot ${botId}] Erro ao consultar grupos via Baileys:`, sockErr);
-            }
-        }
-
-        // Fallback: Check Firestore persisted admin groups if offline or empty live list
-        if (adminGroups.length === 0) {
-            const savedGroupsSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
-            for (const docSnap of savedGroupsSnap.docs) {
-                const data = docSnap.data();
-                if (data.botIsAdmin) {
-                    const config = await getGroupConfig(firestoreDb, botId, docSnap.id, data.groupName);
-                    adminGroups.push({
-                        groupId: docSnap.id,
-                        groupName: data.groupName || 'Grupo WhatsApp',
-                        groupDesc: data.groupDesc || '',
-                        participantCount: data.participantCount || 0,
-                        botIsAdmin: true,
-                        botRole: data.botRole || 'admin',
-                        canDeleteMessages: true,
-                        canKickParticipants: true,
-                        canEditGroupInfo: true,
-                        lastSyncedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : new Date().toISOString(),
-                        config
-                    });
-                }
-            }
-        }
+        const allGroups = await syncBotGroups(botId, sock, firestoreDb, currentBot);
+        const adminGroups = allGroups
+            .filter((g: any) => g.botIsAdmin)
+            .map((g: any) => ({
+                groupId: g.groupId,
+                groupName: g.groupName,
+                groupDesc: g.groupDesc,
+                participantCount: g.participantCount,
+                botIsAdmin: true,
+                botRole: g.botRole || 'admin',
+                canDeleteMessages: true,
+                canKickParticipants: true,
+                canEditGroupInfo: true,
+                lastSyncedAt: new Date().toISOString(),
+                config: g.config
+            }));
 
         res.json(adminGroups);
     } catch (err: any) {
@@ -1890,79 +1885,8 @@ app.get('/api/bot/:id/groups', requireBotAuth, async (req, res) => {
         }
 
         const sock = activeSocks.get(botId);
-        const groupList: any[] = [];
-        const seenGroupIds = new Set<string>();
-
-        // Tenta obter grupos em tempo real via Baileys
-        if (sock && connectionStatuses.get(botId) === 'Conectado') {
-            try {
-                const participating = await sock.groupFetchAllParticipating();
-
-                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
-                    seenGroupIds.add(gId);
-                    const participants = gMeta.participants || [];
-                    
-                    let botIsAdmin = false;
-                    for (const p of participants) {
-                        if (isBotParticipantAdmin(sock.user, p)) {
-                            botIsAdmin = true;
-                            break;
-                        }
-                    }
-
-                    // Sincroniza estado no Firestore para persistência consistente
-                    try {
-                        const groupRef = doc(firestoreDb, 'bots', botId, 'groups', gId);
-                        await setDoc(groupRef, {
-                            botId,
-                            groupId: gId,
-                            groupName: gMeta.subject || 'Grupo WhatsApp',
-                            groupDesc: gMeta.desc?.toString() || '',
-                            participantCount: participants.length,
-                            botIsAdmin,
-                            updatedAt: serverTimestamp()
-                        }, { merge: true });
-                    } catch (syncErr) {
-                        console.error(`[Bot ${botId}] Erro ao sincronizar grupo ${gId} no Firestore:`, syncErr);
-                    }
-
-                    // Carrega ou inicializa config no Firestore
-                    const config = await getGroupConfig(firestoreDb, botId, gId, gMeta.subject);
-                    config.botIsAdmin = botIsAdmin;
-                    config.participantCount = participants.length;
-
-                    groupList.push({
-                        groupId: gId,
-                        groupName: gMeta.subject || config.groupName || 'Grupo WhatsApp',
-                        groupDesc: gMeta.desc?.toString() || config.groupDesc || '',
-                        participantCount: participants.length,
-                        botIsAdmin,
-                        config
-                    });
-                }
-            } catch (sockErr) {
-                console.warn(`[Bot ${botId}] Erro ao buscar grupos via Baileys, usando Firestore:`, sockErr);
-            }
-        }
-
-        // Se o Baileys estiver offline ou não retornar todos, mescla com os grupos salvos no Firestore
-        const savedGroupsSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
-        for (const docSnap of savedGroupsSnap.docs) {
-            const gId = docSnap.id;
-            if (!seenGroupIds.has(gId)) {
-                const config = docSnap.data() as GroupConfig;
-                groupList.push({
-                    groupId: gId,
-                    groupName: config.groupName || 'Grupo WhatsApp',
-                    groupDesc: config.groupDesc || '',
-                    participantCount: config.participantCount || 0,
-                    botIsAdmin: config.botIsAdmin || false,
-                    config
-                });
-            }
-        }
-
-        res.json(groupList);
+        const allGroups = await syncBotGroups(botId, sock, firestoreDb, currentBot);
+        res.json(allGroups);
     } catch (err: any) {
         console.error("Erro ao listar grupos do bot:", err);
         res.status(500).json({ error: "Erro ao listar grupos: " + err.message });

@@ -1,7 +1,15 @@
 import { Firestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, serverTimestamp, getDocs, query, orderBy, limit } from 'firebase/firestore';
+import { areJidsSameUser } from '@whiskeysockets/baileys';
 import { GroupConfig, GroupWarning, GroupLog, ModerationAction } from '../types';
 import { normalizePhone, isPhoneMatch } from '../security';
 import { recordAuditLog } from '../audit';
+import { 
+  resolveOwnWhatsAppIdentity, 
+  isSelfIdentity, 
+  findBotParticipant, 
+  checkIsMentionedOrReply,
+  OwnWhatsAppIdentity
+} from './whatsappIdentity';
 
 // In-memory spam tracker: key = `${botId}:${groupId}:${participantJid}` -> array of message timestamps (ms)
 const spamTracker = new Map<string, number[]>();
@@ -35,7 +43,7 @@ export const DEFAULT_GROUP_CONFIG: Omit<GroupConfig, 'botId' | 'groupId' | 'grou
   adminImmunity: true,
   maxWarnings: 3,
   autoKickOnMaxWarnings: true,
-  respondOnlyOnMentionOrReply: true,
+  respondOnlyOnMentionOrReply: false,
   responseCooldownSeconds: 5,
   dailyMotivationEnabled: false,
   dailyMotivationTime: '08:00',
@@ -105,28 +113,44 @@ export function findForbiddenWords(text: string, badWords: string[]): string[] {
 
 /**
  * Helper to check if a group participant is the bot itself and has admin/superadmin role.
+ * Resolves identity robustly using Baileys mechanisms without naive string comparisons.
  */
-export function isBotParticipantAdmin(sockUser: any, participant: any): boolean {
+export function isBotParticipantAdmin(sockUserOrIdentity: any, participant: any): boolean {
   if (!participant) return false;
-  const isAdminRole = participant.admin === 'admin' || participant.admin === 'superadmin';
+  const isAdminRole = participant.admin === 'admin' 
+    || participant.admin === 'superadmin' 
+    || participant.isAdmin === true 
+    || participant.isSuperAdmin === true;
   if (!isAdminRole) return false;
+
+  if (sockUserOrIdentity?.ownPhone || sockUserOrIdentity?.ownJid || sockUserOrIdentity?.ownLid) {
+    return isSelfIdentity(participant.id || participant.jid, sockUserOrIdentity)
+      || isSelfIdentity(participant.phoneNumber || participant.pn, sockUserOrIdentity)
+      || (participant.lid && sockUserOrIdentity.ownLid && areJidsSameUser(participant.lid, sockUserOrIdentity.ownLid));
+  }
 
   const pJid = participant.id || participant.jid || '';
   const pLid = participant.lid || '';
   
-  const botPhone = normalizePhone(sockUser?.id || sockUser?.jid);
-  const botLid = sockUser?.lid ? normalizePhone(sockUser.lid) : '';
+  const botPhone = normalizePhone(sockUserOrIdentity?.id || sockUserOrIdentity?.jid || sockUserOrIdentity?.botPhone);
+  const botLid = sockUserOrIdentity?.lid ? normalizePhone(sockUserOrIdentity.lid) : '';
 
   const pPhone = normalizePhone(pJid);
   const pLidPhone = pLid ? normalizePhone(pLid) : '';
 
-  if (botPhone && pPhone && isPhoneMatch(botPhone, pPhone)) {
+  if (botPhone && pPhone && (botPhone === pPhone || isPhoneMatch(botPhone, pPhone))) {
     return true;
   }
   if (botLid && pLidPhone && botLid === pLidPhone) {
     return true;
   }
   if (botPhone && pJid.includes(botPhone)) {
+    return true;
+  }
+  if (participant.phoneNumber && normalizePhone(participant.phoneNumber) === botPhone) {
+    return true;
+  }
+  if (participant.pn && normalizePhone(participant.pn) === botPhone) {
     return true;
   }
 
@@ -146,8 +170,15 @@ export function clearGroupMetaCache(groupId?: string) {
 
 /**
  * Retrieves group metadata from Baileys with caching to minimize round-trips.
+ * Accurately determines if the bot is admin using unified identity resolution.
  */
-export async function getGroupMeta(sock: any, groupId: string, forceRefresh = false): Promise<GroupMetaCache | null> {
+export async function getGroupMeta(
+  sock: any, 
+  groupId: string, 
+  forceRefresh = false,
+  currentBot?: any,
+  botId?: string
+): Promise<GroupMetaCache | null> {
   const now = Date.now();
   const cached = groupMetaCache.get(groupId);
   if (!forceRefresh && cached && (now - cached.cachedAt < CACHE_TTL_MS)) {
@@ -158,23 +189,35 @@ export async function getGroupMeta(sock: any, groupId: string, forceRefresh = fa
     const meta = await sock.groupMetadata(groupId);
     if (!meta) return null;
 
+    const identity = await resolveOwnWhatsAppIdentity(sock, currentBot, botId);
     const admins = new Set<string>();
-    let botIsAdmin = false;
+    const botResult = findBotParticipant(meta.participants, identity, meta, sock);
 
     for (const participant of meta.participants || []) {
       const pJid = participant.id || participant.jid;
-      if (participant.admin === 'admin' || participant.admin === 'superadmin') {
-        admins.add(pJid);
-        admins.add(normalizePhone(pJid));
+      if (participant.admin === 'admin' || participant.admin === 'superadmin' || participant.isAdmin || participant.isSuperAdmin) {
+        if (pJid) {
+          admins.add(pJid);
+          admins.add(normalizePhone(pJid));
+        }
+        if (participant.phoneNumber) admins.add(normalizePhone(participant.phoneNumber));
+        if (participant.pn) admins.add(normalizePhone(participant.pn));
+        if (participant.lid) admins.add(participant.lid);
       }
-      if (isBotParticipantAdmin(sock.user, participant)) {
-        botIsAdmin = true;
-      }
+    }
+
+    if (meta.owner) {
+      admins.add(meta.owner);
+      admins.add(normalizePhone(meta.owner));
+    }
+    if (meta.ownerPn) {
+      admins.add(meta.ownerPn);
+      admins.add(normalizePhone(meta.ownerPn));
     }
 
     const groupData: GroupMetaCache = {
       admins,
-      botIsAdmin,
+      botIsAdmin: botResult.isBotAdmin,
       subject: meta.subject || 'Grupo WhatsApp',
       desc: meta.desc?.toString() || '',
       size: (meta.participants || []).length,
@@ -406,25 +449,63 @@ export async function processGroupModeration(opts: {
   const groupConfig = await getGroupConfig(firestoreDb, botId, groupId);
 
   // 2. Fetch group metadata & check immunity
-  const meta = await getGroupMeta(sock, groupId);
+  const meta = await getGroupMeta(sock, groupId, false, currentBot, botId);
+  const identity = await resolveOwnWhatsAppIdentity(sock, currentBot, botId, firestoreDb);
   const normSender = normalizePhone(senderJid);
-  const botNumber = sock.user?.id ? normalizePhone(sock.user.id) : '';
   const ownerNumber = normalizePhone(currentBot.ownerPhone || currentBot.ownerNumber);
 
   // Immune if sender is the bot itself, the registered owner, or a group admin (if adminImmunity is on)
-  const isBot = isPhoneMatch(normSender, botNumber);
+  const isBot = isSelfIdentity(senderJid, identity, sock);
   const isOwner = isPhoneMatch(normSender, ownerNumber);
   const isGroupAdmin = meta?.admins.has(senderJid) || meta?.admins.has(normSender) || false;
   const isImmune = isBot || isOwner || (groupConfig.adminImmunity && isGroupAdmin);
 
+  // Check mention and reply status with unified identity
+  const { isMentioned, isReplyToBot } = checkIsMentionedOrReply({
+    messageObj,
+    rawText,
+    identity,
+    sock
+  });
+
+  // Verify group response policy
+  const respondInGroups = currentBot.respondInGroups !== false && currentBot.respondInGroups !== 0;
+  const respondOnlyOnMention = groupConfig.respondOnlyOnMentionOrReply === true;
+  let canProceedToAI = respondInGroups;
+
+  if (respondOnlyOnMention && !isMentioned && !isReplyToBot) {
+    canProceedToAI = false;
+  }
+
+  // Structured logging for response policy
+  console.log(`[GROUP_RESPONSE_POLICY]`, {
+    botId,
+    groupId,
+    respondInGroups,
+    respondOnlyOnMentionOrReply: respondOnlyOnMention,
+    isMentioned,
+    isReplyToBot,
+    canProceed: canProceedToAI
+  });
+
   if (isImmune) {
-    // Check if bot should respond via AI
+    if (!respondInGroups) {
+      console.log(`[GROUP_MESSAGE_SKIPPED]`, { botId, groupId, reason: 'GROUP_RESPONSES_DISABLED' });
+      return { blocked: false, shouldProceedToAI: false };
+    }
+    if (respondOnlyOnMention && !isMentioned && !isReplyToBot) {
+      console.log(`[GROUP_MESSAGE_SKIPPED]`, { botId, groupId, reason: 'BOT_NOT_MENTIONED' });
+      return { blocked: false, shouldProceedToAI: false };
+    }
+    // Check cooldown
     const shouldRespond = evaluateAiTrigger({
       sock,
       rawText,
       messageObj,
       config: groupConfig,
-      groupId
+      groupId,
+      identity,
+      botId
     });
     return { blocked: false, shouldProceedToAI: shouldRespond };
   }
@@ -472,6 +553,7 @@ export async function processGroupModeration(opts: {
         });
       }
 
+      console.log(`[GROUP_MESSAGE_SKIPPED]`, { botId, groupId, reason: 'BLOCKED_MODERATION_LINK' });
       return { blocked: true, reason: 'LINK_PROIBIDO', actionTaken: action, shouldProceedToAI: false };
     }
   }
@@ -516,6 +598,7 @@ export async function processGroupModeration(opts: {
         });
       }
 
+      console.log(`[GROUP_MESSAGE_SKIPPED]`, { botId, groupId, reason: 'BLOCKED_MODERATION_BAD_WORD' });
       return { blocked: true, reason: 'PALAVRA_PROIBIDA', actionTaken: action, shouldProceedToAI: false };
     }
   }
@@ -556,17 +639,31 @@ export async function processGroupModeration(opts: {
         });
       }
 
+      console.log(`[GROUP_MESSAGE_SKIPPED]`, { botId, groupId, reason: 'BLOCKED_MODERATION_SPAM' });
       return { blocked: true, reason: 'SPAM_FLOOD', actionTaken: action, shouldProceedToAI: false };
     }
   }
 
-  // 6. Check if bot should respond via AI
+  // 6. Check response policy and triggers
+  if (!respondInGroups) {
+    console.log(`[GROUP_MESSAGE_SKIPPED]`, { botId, groupId, reason: 'GROUP_RESPONSES_DISABLED' });
+    return { blocked: false, shouldProceedToAI: false };
+  }
+
+  if (respondOnlyOnMention && !isMentioned && !isReplyToBot) {
+    console.log(`[GROUP_MESSAGE_SKIPPED]`, { botId, groupId, reason: 'BOT_NOT_MENTIONED' });
+    return { blocked: false, shouldProceedToAI: false };
+  }
+
+  // 7. Check if bot should respond via AI
   const shouldRespond = evaluateAiTrigger({
     sock,
     rawText,
     messageObj,
     config: groupConfig,
-    groupId
+    groupId,
+    identity,
+    botId
   });
 
   return { blocked: false, shouldProceedToAI: shouldRespond };
@@ -574,7 +671,7 @@ export async function processGroupModeration(opts: {
 
 /**
  * Checks whether this group message should trigger an AI response from the bot.
- * Enforces `respondOnlyOnMentionOrReply` and cooldown limits.
+ * Enforces cooldown limits.
  */
 function evaluateAiTrigger(opts: {
   sock: any;
@@ -582,25 +679,10 @@ function evaluateAiTrigger(opts: {
   messageObj: any;
   config: GroupConfig;
   groupId: string;
+  identity?: OwnWhatsAppIdentity;
+  botId?: string;
 }): boolean {
-  const { sock, messageObj, config, groupId } = opts;
-
-  if (config.respondOnlyOnMentionOrReply) {
-    const botJid = sock.user?.id ? sock.user.id.split(':')[0] : '';
-    const botFullJid = `${botJid}@s.whatsapp.net`;
-
-    const contextInfo = messageObj?.extendedTextMessage?.contextInfo;
-    const mentionedJids: string[] = contextInfo?.mentionedJid || [];
-    const isBotMentioned = mentionedJids.some(j => j.includes(botJid));
-
-    // Check if replying to bot's message
-    const quotedParticipant = contextInfo?.participant;
-    const isReplyToBot = quotedParticipant && quotedParticipant.includes(botJid);
-
-    if (!isBotMentioned && !isReplyToBot) {
-      return false;
-    }
-  }
+  const { config, groupId, botId } = opts;
 
   // Check rate-limit cooldown
   const now = Date.now();
@@ -608,7 +690,12 @@ function evaluateAiTrigger(opts: {
   const lastResponse = groupAiCooldowns.get(groupId) || 0;
 
   if (now - lastResponse < cooldownMs) {
-    console.log(`[GroupMod] Cooldown ativo para grupo ${groupId}. Ignorando IA por ${((cooldownMs - (now - lastResponse))/1000).toFixed(1)}s.`);
+    console.log(`[GROUP_MESSAGE_SKIPPED]`, {
+      botId: botId || 'unknown',
+      groupId,
+      reason: 'COOLDOWN',
+      remainingSeconds: ((cooldownMs - (now - lastResponse))/1000).toFixed(1)
+    });
     return false;
   }
 

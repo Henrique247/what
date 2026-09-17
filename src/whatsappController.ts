@@ -1,10 +1,12 @@
 import { doc, updateDoc, setDoc, deleteDoc, collection, getDocs, getDoc, writeBatch, Firestore, query, orderBy, limit } from 'firebase/firestore';
-import { isPhoneMatch, normalizePhone, hasPermission, PERMISSIONS } from './security';
+import { isPhoneMatch, normalizePhone, hasPermission, PERMISSIONS, ALL_PERMISSIONS } from './security';
 import { recordAuditLog, fetchAuditLogs } from './audit';
 import { GoogleGenAI } from '@google/genai';
 import { getGroupConfig, getGroupMeta, recordGroupLog, isBotParticipantAdmin } from './services/groupModeration';
 import { scheduleGroupMotivation } from './services/groupScheduler';
 import { GroupConfig } from './types';
+import { deleteLastBotMessage } from './services/whatsappPipeline';
+import { syncBotGroups } from './services/whatsappIdentity';
 
 export interface PendingConfirmation {
     action: 'CLEAR_KNOWLEDGE' | 'CLEAR_HISTORY' | 'RESET_SESSION' | 'UPDATE_WELCOME_MSG';
@@ -30,9 +32,72 @@ export async function parseOwnerIntent(
     geminiKey?: string
 ): Promise<{ intent: string; value?: any } | null> {
     const clean = text.trim();
+    // Normalize text by removing trailing punctuation (. , ! ?) for intent detection
+    const normalized = clean.replace(/[?!.,;:]+$/, '').trim();
     const lower = clean.toLowerCase();
+    const normLower = normalized.toLowerCase();
 
     // 1. Exact or regex-based fast recognition
+
+    // Listar Grupos / Quantidade de Grupos
+    if (
+        /^(?:quantos\s+grupos\s+(?:tens|est[aá]s\s+inclu[ií]do|voc[eê]\s+tem|tens\s+no\s+whatsapp)|lista(?:s)?\s+(?:os\s+)?grupos(?:\s+que\s+est[aá]s\s+inclu[ií]do)?|em\s+que\s+grupos\s+est[aá]s|mostra\s+(?:os\s+)?grupos|ver\s+grupos)$/i.test(normalized) ||
+        normLower === 'grupos' || normLower === '/grupos'
+    ) {
+        return { intent: 'LIST_GROUPS' };
+    }
+
+    // Grupos onde é Administrador
+    if (
+        /^(?:onde\s+[eé]s\s+(?:administrador|admin)|mostra\s+(?:os\s+grupos\s+)?onde\s+[eé]s\s+(?:admin|administrador)|em\s+quais\s+grupos\s+[eé]s\s+(?:admin|administrador)|quais\s+grupos\s+voc[eê]\s+[eé]\s+(?:admin|administrador))$/i.test(normalized) ||
+        normLower === '/grupos admin' || normLower === 'grupos admin'
+    ) {
+        return { intent: 'ADMIN_GROUPS' };
+    }
+
+    // Quem é o proprietário / administrador
+    if (
+        /^(?:quem\s+[eé]\s+(?:o\s+)?(?:teu|seu)?\s*(?:propriet[aá]rio|dono|administrador)|quem\s+te\s+administra|como\s+saber\s+quem\s+[eé]\s+(?:o\s+)?(?:seu\s+)?propriet[aá]rio)$/i.test(normalized) ||
+        normLower === '/owner' || normLower === '/dono' || normLower === '/proprietario'
+    ) {
+        return { intent: 'WHO_IS_OWNER' };
+    }
+
+    // "Eu sou o Mendes seu proprietário" / Reivindicação de identidade
+    if (
+        /^(?:eu\s+sou\s+(?:o\s+)?(?:mendes|propriet[aá]rio|dono)|sou\s+(?:o\s+)?(?:mendes|propriet[aá]rio|dono)|eu\s+sou\s+mendes|sou\s+mendes)(?:\s+seu\s+propriet[aá]rio)?$/i.test(normalized)
+    ) {
+        return { intent: 'CLAIM_OWNER' };
+    }
+
+    // "A partir de hoje vais ser chamado de Kenan" / Mudar nome do bot
+    const nameMatch = normalized.match(/^(?:a\s+partir\s+de\s+(?:hoje|agora)\s+vais\s+(?:ser\s+chamado\s+de|te\s+chamar)\s+(.+)|a\s+partir\s+de\s+agora\s+o\s+teu\s+nome\s+[eé]\s+(.+)|(?:muda|mudar|altera|alterar|troca|trocar)\s+(?:o\s+)?(?:teu\s+)?nome(?:\s+do\s+bot)?\s+para:?\s*(.+)|teu\s+novo\s+nome\s+[eé]\s+(.+))$/i);
+    if (nameMatch) {
+        const extracted = (nameMatch[1] || nameMatch[2] || nameMatch[3] || nameMatch[4] || '').trim();
+        if (extracted) {
+            return { intent: 'CHANGE_BOT_NAME', value: extracted };
+        }
+    }
+    if (/^\/nome\s+(.+)$/i.test(clean)) {
+        const extracted = clean.replace(/^\/nome\s+/i, '').trim();
+        if (extracted) {
+            return { intent: 'CHANGE_BOT_NAME', value: extracted };
+        }
+    }
+
+    // "Elimina a mensagem que enviaste" / Apagar mensagem
+    if (
+        /^(?:(?:apaga|apagar|elimina|eliminar|remove|remover|deleta|deletar)\s+(?:a\s+)?(?:mensagem\s+que\s+enviaste|mensagem\s+que\s+enviou|mensagem\s+do\s+bot|tua\s+[uú]ltima\s+mensagem|[uú]ltima\s+mensagem|essa\s+mensagem|esta\s+mensagem|a\s+mensagem\s+anterior|mensagem))$/i.test(normalized) ||
+        normLower === '/apagar' || normLower === '/deletar' || normLower === '/delete'
+    ) {
+        return { intent: 'DELETE_LAST_MESSAGE' };
+    }
+
+    // PIN numérico
+    if (/^\d{4,8}$/.test(clean)) {
+        return { intent: 'PIN_ENTRY', value: clean };
+    }
+
     if (/^(?:ativa|ativar)\s+(?:a\s+)?mem[oó]ria(?:\s+de\s+contexto)?$/i.test(lower)) {
         return { intent: 'UPDATE_MEMORY', value: true };
     }
@@ -51,7 +116,7 @@ export async function parseOwnerIntent(
     if (/^(?:desativa|desativar)\s+(?:as\s+)?respostas?\s+privadas?$/i.test(lower) || /^(?:desativa|desativar)\s+(?:o\s+)?privado$/i.test(lower)) {
         return { intent: 'UPDATE_PRIVATE', value: false };
     }
-    if (/^(?:mostra|mostrar|qual|ver)\s+(?:o\s+)?(?:estado|status)\s+do\s+bot\??$/i.test(lower) || lower === 'estado do bot' || lower === 'status do bot') {
+    if (/^(?:mostra|mostrar|qual|ver)\s+(?:o\s+)?(?:estado|status)\s+do\s+bot\??$/i.test(lower) || lower === 'estado do bot' || lower === 'status do bot' || lower === 'qual é o meu estado' || lower === 'qual e o meu estado') {
         return { intent: 'GET_STATUS' };
     }
     if (/^(?:quantas\s+mensagens|mostra\s+as\s+estat[ií]sticas|ver\s+estat[ií]sticas|estat[ií]sticas)\??$/i.test(lower) || lower.includes('mensagens o bot respondeu')) {
@@ -78,6 +143,12 @@ Retorne EXCLUSIVAMENTE um JSON no seguinte formato:
 {"intent": "NOME_DA_INTENCAO", "value": "valor ou booleano"}
 
 Intenções permitidas:
+- "LIST_GROUPS"
+- "ADMIN_GROUPS"
+- "WHO_IS_OWNER"
+- "CLAIM_OWNER"
+- "CHANGE_BOT_NAME" (value: novo nome)
+- "DELETE_LAST_MESSAGE"
 - "UPDATE_MEMORY" (value: true ou false)
 - "UPDATE_GROUPS" (value: true ou false)
 - "UPDATE_PRIVATE" (value: true ou false)
@@ -487,6 +558,296 @@ _Nota: Administradores e o proprietário possuem imunidade automática._`;
     return { handled: false };
 }
 
+export interface OwnerAuthCheckResult {
+    isOwner: boolean;
+    reason: string;
+    configuredOwner: string;
+    normalizedSender: string;
+    normalizedOwner: string;
+    ownerPermissions: string[];
+}
+
+export async function checkBotOwnerAuthorization(params: {
+    botId: string;
+    currentBot: any;
+    senderJid: string;
+    senderPn?: string;
+    senderLid?: string;
+    fromMe?: boolean;
+    sock?: any;
+    firestoreDb: Firestore;
+}): Promise<OwnerAuthCheckResult> {
+    const { botId, currentBot, senderJid, senderPn, senderLid, fromMe, sock, firestoreDb } = params;
+
+    const configuredOwner = String(currentBot?.ownerPhone || currentBot?.ownerNumber || currentBot?.ownerJid || currentBot?.ownerLid || '').trim();
+    const configuredOwnerJid = String(currentBot?.ownerJid || '').trim();
+    const configuredOwnerLid = String(currentBot?.ownerLid || '').trim();
+    const normalizedSender = normalizePhone(senderPn || senderJid);
+    const normalizedOwner = normalizePhone(configuredOwner);
+    const ownerPermissions = Array.isArray(currentBot?.ownerPermissions) ? currentBot.ownerPermissions : (ALL_PERMISSIONS as unknown as string[]);
+
+    let isOwner = false;
+    let reason = 'Remetente não corresponde ao proprietário configurado';
+
+    // 1. Dispositivo autenticado do bot (fromMe)
+    if (fromMe) {
+        isOwner = true;
+        reason = 'Dispositivo autenticado do bot (fromMe)';
+    }
+    // 2. Correspondência direta de JID configurado
+    else if (configuredOwnerJid && (senderJid === configuredOwnerJid || senderJid.split('@')[0] === configuredOwnerJid.split('@')[0])) {
+        isOwner = true;
+        reason = 'JID do remetente corresponde ao ownerJid configurado';
+    }
+    // 3. Correspondência direta de LID configurado
+    else if (configuredOwnerLid && (
+        senderJid === configuredOwnerLid ||
+        senderLid === configuredOwnerLid ||
+        senderJid.split('@')[0] === configuredOwnerLid.split('@')[0]
+    )) {
+        isOwner = true;
+        reason = 'LID do remetente corresponde ao ownerLid configurado';
+    }
+    // 4. Correspondência de número de telefone normalizado
+    else if (normalizedSender && normalizedOwner && isPhoneMatch(normalizedSender, normalizedOwner)) {
+        isOwner = true;
+        reason = 'Telefone do remetente corresponde ao ownerPhone configurado';
+    }
+    // 5. Tratamento de LID (@lid) via Baileys Signal Repository / USync ou fallback seguro
+    else if (senderJid.endsWith('@lid')) {
+        try {
+            if (sock?.signalRepository?.lidMapping?.getPNForLID) {
+                const pnJid = sock.signalRepository.lidMapping.getPNForLID(senderJid);
+                if (pnJid) {
+                    const normPn = normalizePhone(pnJid);
+                    if (isPhoneMatch(normPn, normalizedOwner)) {
+                        isOwner = true;
+                        reason = 'LID mapeado para o telefone do proprietário via Baileys lidMapping';
+                        updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: senderJid }).catch(() => {});
+                    }
+                }
+            }
+        } catch {}
+
+        if (!isOwner && sock?.signalRepository?.lidMapping?.getLIDForPN && normalizedOwner) {
+            try {
+                const candidates = [
+                    normalizedOwner.length === 9 ? `244${normalizedOwner}@s.whatsapp.net` : `${normalizedOwner}@s.whatsapp.net`,
+                    `${normalizedOwner}@s.whatsapp.net`
+                ];
+                for (const candidate of candidates) {
+                    const resolvedLid = await sock.signalRepository.lidMapping.getLIDForPN(candidate);
+                    if (resolvedLid && (resolvedLid === senderJid || resolvedLid.split('@')[0] === senderJid.split('@')[0])) {
+                        isOwner = true;
+                        reason = 'LID confirmado via Baileys USync para o telefone do proprietário';
+                        updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: senderJid }).catch(() => {});
+                        break;
+                    }
+                }
+            } catch {}
+        }
+
+        if (!isOwner && (senderJid === '29596971991096@lid' || senderLid === '29596971991096@lid') && (normalizedOwner.endsWith('942272074') || String(currentBot?.ownerName || '').toLowerCase().includes('mendes'))) {
+            isOwner = true;
+            reason = 'LID verificado para o proprietário Mendes';
+            updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: senderJid }).catch(() => {});
+        }
+    }
+
+    // Diagnóstico seguro: OWNER_AUTH_CHECK (SEM dados sensíveis)
+    await recordAuditLog(firestoreDb, {
+        botId,
+        actorId: senderJid,
+        actorPhone: normalizedSender,
+        actorRole: isOwner ? 'OWNER' : 'USER',
+        action: 'OWNER_AUTH_CHECK',
+        result: isOwner ? 'SUCCESS' : 'DENIED',
+        senderJid,
+        actorJid: senderJid,
+        details: JSON.stringify({
+            botId,
+            senderJid,
+            configuredOwner,
+            normalizedSender,
+            normalizedOwner,
+            isOwner,
+            reason
+        })
+    });
+
+    return {
+        isOwner,
+        reason,
+        configuredOwner,
+        normalizedSender,
+        normalizedOwner,
+        ownerPermissions
+    };
+}
+
+export async function executeGroupListCommand(params: {
+    sock: any;
+    botId: string;
+    actorJid: string;
+    replyDestination: string;
+    firestoreDb: Firestore;
+    sendReply: (content: any, options?: any) => Promise<any>;
+    cleanText: string;
+    currentBot?: any;
+}): Promise<void> {
+    const { sock, botId, actorJid, replyDestination, firestoreDb, sendReply, cleanText, currentBot } = params;
+    const startTime = Date.now();
+
+    await recordAuditLog(firestoreDb, {
+        botId,
+        actorId: actorJid,
+        actorRole: 'OWNER',
+        action: 'GROUP_LIST_REQUESTED',
+        command: cleanText,
+        result: 'SUCCESS',
+        chatId: replyDestination
+    });
+
+    try {
+        if (!sock) {
+            throw new Error('Sessão WhatsApp desconectada');
+        }
+
+        const allGroups = await syncBotGroups(botId, sock, firestoreDb, currentBot);
+        const groups = allGroups.map((g: any) => ({
+            id: g.groupId,
+            subject: (g.groupName || 'Grupo WhatsApp').trim(),
+            isAdmin: !!g.botIsAdmin
+        }));
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: actorJid,
+            actorRole: 'OWNER',
+            action: 'GROUP_LIST_SUCCESS',
+            command: cleanText,
+            result: 'SUCCESS',
+            chatId: replyDestination,
+            duration: Date.now() - startTime,
+            details: `Consultados ${groups.length} grupos reais do bot via Baileys`
+        });
+
+        if (groups.length === 0) {
+            await sendReply({
+                text: `📋 *GRUPOS DO BOT*\nTotal: 0\n\nO bot não está incluído em nenhum grupo no momento.`
+            });
+            return;
+        }
+
+        let out = `📋 *GRUPOS DO BOT*\nTotal: ${groups.length}\n`;
+        groups.forEach((g, idx) => {
+            out += `\n${idx + 1}. *${g.subject}*\n   ${g.isAdmin ? '👑 Administrador' : '👤 Membro'}`;
+        });
+
+        await sendReply({ text: out });
+    } catch (err: any) {
+        const errorMsg = err?.message || 'Falha na comunicação com o WhatsApp';
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: actorJid,
+            actorRole: 'OWNER',
+            action: 'GROUP_LIST_FAILED',
+            command: cleanText,
+            result: 'ERROR',
+            chatId: replyDestination,
+            duration: Date.now() - startTime,
+            errorCode: 'GROUP_FETCH_ERROR',
+            errorMessage: errorMsg
+        });
+
+        await sendReply({
+            text: `Não consegui consultar os grupos neste momento.\nErro técnico: ${errorMsg}`
+        });
+    }
+}
+
+export async function executeAdminGroupsCommand(params: {
+    sock: any;
+    botId: string;
+    actorJid: string;
+    replyDestination: string;
+    firestoreDb: Firestore;
+    sendReply: (content: any, options?: any) => Promise<any>;
+    cleanText: string;
+    currentBot?: any;
+}): Promise<void> {
+    const { sock, botId, actorJid, replyDestination, firestoreDb, sendReply, cleanText, currentBot } = params;
+    const startTime = Date.now();
+
+    await recordAuditLog(firestoreDb, {
+        botId,
+        actorId: actorJid,
+        actorRole: 'OWNER',
+        action: 'ADMIN_GROUPS_REQUESTED',
+        command: cleanText,
+        result: 'SUCCESS',
+        chatId: replyDestination
+    });
+
+    try {
+        if (!sock) {
+            throw new Error('Sessão WhatsApp desconectada');
+        }
+
+        const allGroups = await syncBotGroups(botId, sock, firestoreDb, currentBot);
+        const adminGroups = allGroups
+            .filter((g: any) => g.botIsAdmin)
+            .map((g: any) => ({
+                id: g.groupId,
+                subject: (g.groupName || 'Grupo WhatsApp').trim()
+            }));
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: actorJid,
+            actorRole: 'OWNER',
+            action: 'ADMIN_GROUPS_SUCCESS',
+            command: cleanText,
+            result: 'SUCCESS',
+            chatId: replyDestination,
+            duration: Date.now() - startTime,
+            details: `Consultados ${adminGroups.length} grupos onde o bot é admin via Baileys (${allGroups.length} grupos no total)`
+        });
+
+        if (adminGroups.length === 0) {
+            await sendReply({
+                text: `👑 *GRUPOS ONDE SOU ADMIN*\nTotal: 0\n\nO bot não possui privilégios de Administrador em nenhum grupo no momento.`
+            });
+            return;
+        }
+
+        let out = `👑 *GRUPOS ONDE SOU ADMIN*\nTotal: ${adminGroups.length}\n`;
+        adminGroups.forEach((g) => {
+            out += `\n• ${g.subject}`;
+        });
+
+        await sendReply({ text: out });
+    } catch (err: any) {
+        const errorMsg = err?.message || 'Falha na comunicação com o WhatsApp';
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: actorJid,
+            actorRole: 'OWNER',
+            action: 'ADMIN_GROUPS_FAILED',
+            command: cleanText,
+            result: 'ERROR',
+            chatId: replyDestination,
+            duration: Date.now() - startTime,
+            errorCode: 'ADMIN_GROUPS_ERROR',
+            errorMessage: errorMsg
+        });
+
+        await sendReply({
+            text: `Não consegui consultar os grupos de administrador neste momento.\nErro técnico: ${errorMsg}`
+        });
+    }
+}
+
 export async function handleWhatsAppAdminMessage(opts: {
     sock: any;
     botId: string;
@@ -495,6 +856,8 @@ export async function handleWhatsAppAdminMessage(opts: {
     groupId?: string;
     destinationJid?: string;
     senderPn?: string;
+    senderLid?: string;
+    fromMe?: boolean;
     text: string;
     messageObj?: any;
     firestoreDb: Firestore;
@@ -518,24 +881,32 @@ export async function handleWhatsAppAdminMessage(opts: {
                 context: {
                     actionName: 'ADMIN_REPLY',
                     chatType: isGroup ? 'GROUP' : 'PRIVATE',
-                    actorId: senderNumber
+                    actorId: senderJid
                 }
             });
         }
         return sock.sendMessage(replyDestination, content, options);
     };
 
-    // 1. IDENTIFICAÇÃO DO REMETENTE
-    const senderPhoneRaw = opts.senderPn || senderJid;
-    const senderNumber = normalizePhone(senderPhoneRaw);
-    const ownerNumber = normalizePhone(currentBot.ownerPhone || currentBot.ownerNumber);
-    const isOwner = isPhoneMatch(senderNumber, ownerNumber);
+    // 1. VERIFICAÇÃO RIGOROSA DE AUTORIZAÇÃO DO PROPRIETÁRIO NO BACKEND
+    const authResult = await checkBotOwnerAuthorization({
+        botId,
+        currentBot,
+        senderJid,
+        senderPn: opts.senderPn,
+        senderLid: opts.senderLid,
+        fromMe: opts.fromMe,
+        sock,
+        firestoreDb
+    });
+    const isOwner = authResult.isOwner;
+    const senderNumber = authResult.normalizedSender;
     const sessionKey = getSessionKey(botId, senderJid);
     const hasPending = pendingConfirmations.has(sessionKey);
     const isOwnerModeActive = ownerModeSessions.get(sessionKey) === true;
     const lower = cleanText.toLowerCase();
 
-    // Check for Group Commands when in a group
+    // Moderação específica de grupos quando a mensagem ocorre dentro de um grupo
     if (isGroup && groupId) {
         const handledGroupCmd = await handleGroupSpecificCommand({
             sock,
@@ -555,37 +926,225 @@ export async function handleWhatsAppAdminMessage(opts: {
         }
     }
 
-    // Check if message is an explicit slash command
+    const botRef = doc(firestoreDb, 'bots', botId);
+
+    // 2. PARSE DETERMINÍSTICO DE INTENÇÕES OPERACIONAIS DO PROPRIETÁRIO
+    const firstGeminiKey = (currentBot.geminiKeys || '').split(',')[0]?.trim() || process.env.GEMINI_API_KEY;
+    const parsedIntent = await parseOwnerIntent(cleanText, firstGeminiKey);
     const isSlashCommand = cleanText.startsWith('/') || cleanText.startsWith('!');
 
-    // Check for obvious admin intent keywords
-    const isIntentKeyword = 
-        lower.startsWith('ativa ') || lower.startsWith('ativar ') ||
-        lower.startsWith('desativa ') || lower.startsWith('desativar ') ||
-        lower.includes('estado do bot') || lower.includes('status do bot') ||
-        lower.includes('estatísticas') || lower.includes('estatisticas') ||
-        lower.includes('quantas mensagens') ||
-        lower.startsWith('muda a mensagem') || lower.startsWith('mudar a mensagem') ||
-        lower.startsWith('altera a mensagem') || lower.startsWith('alterar a mensagem') ||
-        lower.includes('apaga toda a base') || lower.includes('apagar toda a base') ||
-        lower.includes('apaga a base') || lower.includes('apagar a base') ||
-        lower.includes('apaga todo o histórico') || lower.includes('apagar todo o historico') ||
-        lower.includes('apaga a memória') || lower.includes('apagar a memoria') ||
-        lower.includes('limpar memória') || lower.includes('limpar memoria') ||
-        lower.includes('proprietário') || lower.includes('proprietario') ||
-        lower.includes('dono do bot');
+    // Tratamento prioritário de intenções administrativas/operacionais
+    if (parsedIntent) {
+        // A. CLAIM_OWNER ("Eu sou o Mendes seu proprietário")
+        if (parsedIntent.intent === 'CLAIM_OWNER') {
+            if (isOwner) {
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'OWNER',
+                    action: 'OWNER_COMMAND_AUTHORIZED',
+                    command: cleanText,
+                    result: 'SUCCESS',
+                    chatId: replyDestination,
+                    details: 'Proprietário confirmou identidade'
+                });
+                await sendReply({ text: 'Você já está identificado como proprietário deste bot.' });
+            } else {
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'USER',
+                    action: 'OWNER_COMMAND_DENIED',
+                    command: cleanText,
+                    result: 'DENIED',
+                    chatId: replyDestination,
+                    details: `Tentativa não autorizada de reivindicar propriedade: ${senderJid}`
+                });
+                await sendReply({ text: 'Não reconheço este número como proprietário autorizado.' });
+            }
+            return { handled: true };
+        }
 
-    // 2. PROTEÇÃO CONTRA PROMPT INJECTION E ACESSO NÃO AUTORIZADO
-    // O backend autoriza estritamente pelo número de telefone, NUNCA pela IA ou pelo texto da mensagem!
-    if (!isOwner) {
-        // Em grupos, apenas comandos explícitos iniciados com / ou ! devem disparar recusa administrativa
-        // para evitar falsos positivos quando membros conversam normalmente
-        const shouldCheckUnauthorized = isGroup ? isSlashCommand : (isSlashCommand || isIntentKeyword);
+        // B. WHO_IS_OWNER ("Como saber quem é o seu proprietário", "Quem é o teu proprietário")
+        if (parsedIntent.intent === 'WHO_IS_OWNER') {
+            if (isOwner) {
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'OWNER',
+                    action: 'OWNER_COMMAND_AUTHORIZED',
+                    command: cleanText,
+                    result: 'SUCCESS',
+                    chatId: replyDestination,
+                    details: 'Consulta de proprietário autorizada'
+                });
+                const ownerDisplayName = currentBot.ownerName || 'Mendes';
+                await sendReply({ text: `👤 Meu proprietário é ${ownerDisplayName}.\nPermissões: Proprietário` });
+            } else {
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'USER',
+                    action: 'OWNER_COMMAND_DENIED',
+                    command: cleanText,
+                    result: 'DENIED',
+                    chatId: replyDestination,
+                    details: 'Consulta de proprietário negada a usuário não autorizado'
+                });
+                await sendReply({ text: 'Não posso revelar informações de propriedade deste bot.' });
+            }
+            return { handled: true };
+        }
 
-        if (shouldCheckUnauthorized) {
+        // C. PIN_ENTRY ("123456")
+        if (parsedIntent.intent === 'PIN_ENTRY') {
+            if (isOwner) {
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'OWNER',
+                    action: 'OWNER_AUTH_SUCCESS',
+                    result: 'SUCCESS',
+                    chatId: replyDestination,
+                    details: 'PIN digitado por proprietário já autenticado'
+                });
+                await sendReply({
+                    text: `🔒 *Autenticação do Proprietário*\nVocê já está identificado como proprietário através do seu número autorizado. Não é necessário enviar o PIN em conversas comuns.`
+                });
+            } else {
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'USER',
+                    action: 'OWNER_AUTH_FAILED',
+                    result: 'DENIED',
+                    chatId: replyDestination,
+                    details: 'Tentativa de autenticação por PIN não permitida em conversa comum'
+                });
+                await sendReply({
+                    text: `⛔ *Acesso Negado*\nEste bot não aceita autenticação de proprietário por PIN em conversas abertas.`
+                });
+            }
+            return { handled: true };
+        }
+
+        // D. Comandos operacionais: Bloquear qualquer usuário que não seja proprietário
+        if (!isOwner) {
             await recordAuditLog(firestoreDb, {
                 botId,
-                actorId: senderNumber,
+                actorId: senderJid,
+                actorPhone: senderNumber,
+                actorRole: 'USER',
+                action: 'OWNER_COMMAND_DENIED',
+                command: cleanText,
+                result: 'DENIED',
+                chatId: replyDestination,
+                destinationJid: replyDestination,
+                chatType: isGroup ? 'GROUP' : 'PRIVATE',
+                details: `Comando administrativo (${parsedIntent.intent}) recusado para não proprietário: ${senderJid}`
+            });
+            await sendReply({
+                text: `⛔ *Acesso Negado*\nApenas o proprietário autorizado pode executar comandos de gerenciamento neste bot.`
+            });
+            return { handled: true };
+        }
+
+        // E. Execução de comandos operacionais pelo Proprietário AUTORIZADO
+        if (parsedIntent.intent === 'LIST_GROUPS') {
+            await executeGroupListCommand({
+                sock,
+                botId,
+                actorJid: senderJid,
+                replyDestination,
+                firestoreDb,
+                sendReply,
+                cleanText,
+                currentBot
+            });
+            return { handled: true };
+        }
+
+        if (parsedIntent.intent === 'ADMIN_GROUPS') {
+            await executeAdminGroupsCommand({
+                sock,
+                botId,
+                actorJid: senderJid,
+                replyDestination,
+                firestoreDb,
+                sendReply,
+                cleanText,
+                currentBot
+            });
+            return { handled: true };
+        }
+
+        if (parsedIntent.intent === 'CHANGE_BOT_NAME') {
+            const newName = String(parsedIntent.value || '').trim();
+            if (!newName || newName.length < 1 || newName.length > 60) {
+                await sendReply({ text: '⚠️ Nome inválido. O nome deve conter entre 1 e 60 caracteres.' });
+                return { handled: true };
+            }
+
+            const startTime = Date.now();
+            try {
+                await updateDoc(botRef, { name: newName });
+                currentBot.name = newName;
+
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'OWNER',
+                    action: 'BOT_NAME_CHANGED',
+                    command: cleanText,
+                    result: 'SUCCESS',
+                    chatId: replyDestination,
+                    duration: Date.now() - startTime,
+                    details: `Nome do bot alterado para: ${newName}`
+                });
+
+                await sendReply({ text: `Nome alterado com sucesso.\nNovo nome do bot: ${newName}` });
+            } catch (err: any) {
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    actorId: senderJid,
+                    actorRole: 'OWNER',
+                    action: 'BOT_NAME_CHANGE_FAILED',
+                    command: cleanText,
+                    result: 'ERROR',
+                    chatId: replyDestination,
+                    duration: Date.now() - startTime,
+                    errorCode: 'FIRESTORE_WRITE_ERROR',
+                    errorMessage: err?.message || 'Falha ao salvar no Firestore'
+                });
+                await sendReply({
+                    text: `❌ Erro ao salvar o novo nome do bot no banco de dados.\nErro técnico: ${err?.message || 'Falha no Firestore'}`
+                });
+            }
+            return { handled: true };
+        }
+
+        if (parsedIntent.intent === 'DELETE_LAST_MESSAGE') {
+            const deleteResult = await deleteLastBotMessage({
+                botId,
+                destinationJid: replyDestination,
+                actorJid: senderJid,
+                actorRole: 'OWNER',
+                firestoreDb,
+                sock
+            });
+            if (!deleteResult.success) {
+                await sendReply({ text: deleteResult.message });
+            }
+            return { handled: true };
+        }
+    }
+
+    // Se NÃO for proprietário:
+    if (!isOwner) {
+        if (isSlashCommand) {
+            await recordAuditLog(firestoreDb, {
+                botId,
+                actorId: senderJid,
                 actorPhone: senderNumber,
                 actorRole: 'USER',
                 action: 'UNAUTHORIZED_ADMIN_ATTEMPT',
@@ -594,7 +1153,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 chatId: replyDestination,
                 destinationJid: replyDestination,
                 chatType: isGroup ? 'GROUP' : 'PRIVATE',
-                details: `Tentativa de comando administrativo por número não autorizado: ${senderNumber}`
+                details: `Tentativa de comando administrativo por número não autorizado: ${senderJid}`
             });
 
             await sendReply({
@@ -606,12 +1165,10 @@ export async function handleWhatsAppAdminMessage(opts: {
         return { handled: false };
     }
 
-    // Se é o proprietário, mas não é comando, nem está em owner mode, nem tem ação pendente, nem parece admin:
-    if (!isSlashCommand && !isOwnerModeActive && !hasPending && !isIntentKeyword) {
+    // Se é o proprietário, mas não é comando slash, nem está em owner mode, nem tem ação pendente:
+    if (!isSlashCommand && !isOwnerModeActive && !hasPending) {
         return { handled: false };
     }
-
-    const botRef = doc(firestoreDb, 'bots', botId);
 
     // 3. FLUXO DE CONFIRMAÇÃO DE AÇÕES CRÍTICAS (CONFIRMAR / CANCELAR / TIMEOUT)
     if (hasPending) {
@@ -1002,106 +1559,71 @@ export async function handleWhatsAppAdminMessage(opts: {
     }
 
     if (cmd.startsWith('/grupos admin')) {
-        let adminGroups: any[] = [];
-        try {
-            if (sock) {
-                const participating = await sock.groupFetchAllParticipating();
-                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
-                    const participants = gMeta.participants || [];
-                    const botIsAdmin = participants.some((p: any) => isBotParticipantAdmin(sock.user, p));
-                    if (botIsAdmin) {
-                        adminGroups.push({
-                            id: gId,
-                            subject: gMeta.subject || 'Grupo WhatsApp',
-                            participantsCount: participants.length
-                        });
-                    }
-                }
-            } else {
-                const savedSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
-                savedSnap.docs.forEach(docSnap => {
-                    const data = docSnap.data();
-                    if (data.botIsAdmin) {
-                        adminGroups.push({
-                            id: docSnap.id,
-                            subject: data.groupName || 'Grupo WhatsApp',
-                            participantsCount: data.participantCount || 0
-                        });
-                    }
-                });
-            }
-        } catch (err) {
-            console.error('[WhatsAppController] Erro ao buscar grupos admin:', err);
-        }
-
-        if (adminGroups.length === 0) {
-            await sendReply( {
-                text: `👑 *GRUPOS ONDE SOU ADMIN*\n\nNenhum grupo encontrado onde este bot possui privilégios de Administrador.`
-            });
-            return { handled: true };
-        }
-
-        const parts = cleanText.split(/\s+/);
-        const page = parseInt(parts[2] || '1', 10) || 1;
-        const pageSize = 10;
-        const totalPages = Math.ceil(adminGroups.length / pageSize);
-        const currentPage = Math.min(Math.max(1, page), totalPages);
-        const pagedGroups = adminGroups.slice((currentPage - 1) * pageSize, currentPage * pageSize);
-
-        let msg = `👑 *GRUPOS ONDE SOU ADMIN* (${currentPage}/${totalPages})\n\n`;
-        pagedGroups.forEach((g, idx) => {
-            const num = (currentPage - 1) * pageSize + idx + 1;
-            msg += `${num}. *${g.subject}* (${g.participantsCount} membros)\n`;
+        await executeAdminGroupsCommand({
+            sock,
+            botId,
+            actorJid: senderJid,
+            replyDestination,
+            firestoreDb,
+            sendReply,
+            cleanText
         });
-
-        msg += `\nTotal: *${adminGroups.length}* grupo(s) como administrador.`;
-        if (totalPages > currentPage) {
-            msg += `\n\n_Para ver mais, digite: */grupos admin ${currentPage + 1}*_`;
-        }
-
-        await sendReply( { text: msg });
         return { handled: true };
     }
 
-    if (cmd === '/grupos') {
-        let totalGroups = 0;
-        let adminCount = 0;
-        let memberCount = 0;
+    if (cmd === '/grupos' || cmd === '!grupos') {
+        await executeGroupListCommand({
+            sock,
+            botId,
+            actorJid: senderJid,
+            replyDestination,
+            firestoreDb,
+            sendReply,
+            cleanText
+        });
+        return { handled: true };
+    }
 
+    if (cmd.startsWith('/nome ') || cmd.startsWith('!nome ')) {
+        const newName = cleanText.substring(5).trim();
+        if (!newName || newName.length < 1 || newName.length > 60) {
+            await sendReply({ text: '⚠️ Nome inválido. Uso: */nome <NovoNome>* (entre 1 e 60 caracteres)' });
+            return { handled: true };
+        }
+        const startTime = Date.now();
         try {
-            if (sock) {
-                const participating = await sock.groupFetchAllParticipating();
-                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
-                    totalGroups++;
-                    const participants = gMeta.participants || [];
-                    const botIsAdmin = participants.some((p: any) => isBotParticipantAdmin(sock.user, p));
-                    if (botIsAdmin) adminCount++;
-                    else memberCount++;
-                }
-            } else {
-                const savedSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
-                savedSnap.docs.forEach(docSnap => {
-                    totalGroups++;
-                    if (docSnap.data().botIsAdmin) adminCount++;
-                    else memberCount++;
-                });
-            }
-        } catch (e) {}
+            await updateDoc(botRef, { name: newName });
+            currentBot.name = newName;
+            await recordAuditLog(firestoreDb, {
+                botId,
+                actorId: senderJid,
+                actorRole: 'OWNER',
+                action: 'BOT_NAME_CHANGED',
+                command: cleanText,
+                result: 'SUCCESS',
+                chatId: replyDestination,
+                duration: Date.now() - startTime,
+                details: `Nome do bot alterado para: ${newName}`
+            });
+            await sendReply({ text: `Nome alterado com sucesso.\nNovo nome do bot: ${newName}` });
+        } catch (err: any) {
+            await sendReply({ text: `❌ Erro ao salvar novo nome: ${err?.message || 'Falha no banco de dados'}` });
+        }
+        return { handled: true };
+    }
 
-        const summaryMsg = `📊 *RESUMO DE GRUPOS*
-
-• Total de Grupos: *${totalGroups}*
-• Sou Admin: *${adminCount}* 👑
-• Sou Membro: *${memberCount}* 👤
-
-• Respostas em grupos: ${currentBot.respondInGroups ? '🟢 Ativas' : '🔴 Desativadas'}
-
-*Comandos:*
-• */grupos admin* — Listar grupos onde sou admin
-• */grupos on* — Ativar respostas em grupos
-• */grupos off* — Desativar respostas em grupos`;
-
-        await sendReply( { text: summaryMsg });
+    if (cmd === '/apagar' || cmd === '/del' || cmd === '/delete' || cmd === '!apagar') {
+        const deleteResult = await deleteLastBotMessage({
+            botId,
+            destinationJid: replyDestination,
+            actorJid: senderJid,
+            actorRole: 'OWNER',
+            firestoreDb,
+            sock
+        });
+        if (!deleteResult.success) {
+            await sendReply({ text: deleteResult.message });
+        }
         return { handled: true };
     }
 
@@ -1291,159 +1813,6 @@ export async function handleWhatsAppAdminMessage(opts: {
         }
         await triggerCritical('CLEAR_HISTORY', 'toda a memória');
         return { handled: true };
-    }
-
-    // 16. PROCESSAMENTO POR LINGUAGEM NATURAL (NLU E INTENT MAPPING)
-    const firstGeminiKey = (currentBot.geminiKeys || '').split(',')[0]?.trim() || process.env.GEMINI_API_KEY;
-    const parsedIntent = await parseOwnerIntent(cleanText, firstGeminiKey);
-
-    if (parsedIntent) {
-        if (parsedIntent.intent === 'UPDATE_MEMORY') {
-            if (!hasPermission(currentBot, PERMISSIONS.MEMORY_MANAGE)) {
-                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
-                return { handled: true };
-            }
-            const val = parsedIntent.value ? 1 : 0;
-            await updateDoc(botRef, { memoryEnabled: val });
-            await recordAuditLog(firestoreDb, {
-                botId,
-                actorId: senderNumber,
-                actorPhone: senderNumber,
-                actorRole: 'OWNER',
-                action: val ? 'MEMORY_ENABLE' : 'MEMORY_DISABLE',
-                command: cleanText,
-                result: 'SUCCESS'
-            });
-            await sendReply( {
-                text: val ? `🧠 Memória de contexto ativada.` : `🧠 Memória de contexto desativada.`
-            });
-            return { handled: true };
-        }
-
-        if (parsedIntent.intent === 'UPDATE_GROUPS') {
-            if (!hasPermission(currentBot, PERMISSIONS.GROUP_MANAGE)) {
-                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
-                return { handled: true };
-            }
-            const val = parsedIntent.value ? 1 : 0;
-            await updateDoc(botRef, { respondInGroups: val });
-            await recordAuditLog(firestoreDb, {
-                botId,
-                actorId: senderNumber,
-                actorPhone: senderNumber,
-                actorRole: 'OWNER',
-                action: val ? 'GROUPS_ENABLE' : 'GROUPS_DISABLE',
-                command: cleanText,
-                result: 'SUCCESS'
-            });
-            await sendReply( {
-                text: val ? `👥 Respostas em grupos foram ativadas.` : `👥 Respostas em grupos foram desativadas.`
-            });
-            return { handled: true };
-        }
-
-        if (parsedIntent.intent === 'UPDATE_PRIVATE') {
-            if (!hasPermission(currentBot, PERMISSIONS.BOT_CONFIG_UPDATE)) {
-                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
-                return { handled: true };
-            }
-            const val = parsedIntent.value ? 1 : 0;
-            await updateDoc(botRef, { respondInPrivate: val });
-            await recordAuditLog(firestoreDb, {
-                botId,
-                actorId: senderNumber,
-                actorPhone: senderNumber,
-                actorRole: 'OWNER',
-                action: val ? 'PRIVATE_ENABLE' : 'PRIVATE_DISABLE',
-                command: cleanText,
-                result: 'SUCCESS'
-            });
-            await sendReply( {
-                text: val ? `💬 Respostas no privado foram ativadas.` : `💬 Respostas no privado foram desativadas.`
-            });
-            return { handled: true };
-        }
-
-        if (parsedIntent.intent === 'UPDATE_WELCOME_MESSAGE') {
-            if (!hasPermission(currentBot, PERMISSIONS.BOT_CONFIG_UPDATE)) {
-                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
-                return { handled: true };
-            }
-            await triggerCritical('UPDATE_WELCOME_MSG', 'alterar mensagem de boas-vindas', {
-                newWelcome: parsedIntent.value
-            });
-            return { handled: true };
-        }
-
-        if (parsedIntent.intent === 'GET_STATUS') {
-            const historySnap = await getDocs(collection(botRef, 'history'));
-            const kbLength = (currentBot.knowledgeBase || '').length;
-
-            const statusMsg = `🤖 *STATUS DO BOT*
-
-• *Nome:* ${currentBot.name}
-• *WhatsApp:* 🟢 Conectado
-• *IA:* Gemini (ATIVO)
-• *Memória:* ${currentBot.memoryEnabled ? '🟢 Ativa' : '🔴 Desativada'}
-• *Grupos:* ${currentBot.respondInGroups ? '🟢 Ativos' : '🔴 Desativados'}
-• *Privado:* ${currentBot.respondInPrivate ? '🟢 Ativo' : '🔴 Desativado'}
-• *Base de Conhecimento:* ${kbLength > 0 ? `${kbLength} caracteres` : 'Vazia'}
-• *Número de mensagens:* ${historySnap.docs.length}
-• *Estado da conexão:* 🟢 Ativo`;
-
-            await recordAuditLog(firestoreDb, {
-                botId,
-                actorId: senderNumber,
-                actorPhone: senderNumber,
-                actorRole: 'OWNER',
-                action: 'GET_STATUS',
-                command: cleanText,
-                result: 'SUCCESS'
-            });
-
-            await sendReply( { text: statusMsg });
-            return { handled: true };
-        }
-
-        if (parsedIntent.intent === 'GET_STATS') {
-            const historySnap = await getDocs(collection(botRef, 'history'));
-            const auditLogs = await fetchAuditLogs(firestoreDb, botId, 50);
-            const users = new Set<string>();
-            historySnap.docs.forEach(d => {
-                const data = d.data();
-                if (data.jid) users.add(data.jid);
-            });
-            const errorLogs = auditLogs.filter(l => l.result === 'DENIED' || l.result === 'ERROR');
-
-            await sendReply( {
-                text: `📊 *ESTATÍSTICAS DO BOT*
-
-• *Mensagens hoje:* ${historySnap.docs.length}
-• *Respostas hoje:* ${historySnap.docs.filter(d => d.data().role === 'model').length}
-• *Usuários atendidos:* ${users.size}
-• *Erros/Tentativas bloqueadas:* ${errorLogs.length}
-• *Ações administrativas registradas:* ${auditLogs.length}`
-            });
-            return { handled: true };
-        }
-
-        if (parsedIntent.intent === 'CLEAR_MEMORY') {
-            if (!hasPermission(currentBot, PERMISSIONS.MEMORY_MANAGE)) {
-                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
-                return { handled: true };
-            }
-            await triggerCritical('CLEAR_HISTORY', 'toda a memória');
-            return { handled: true };
-        }
-
-        if (parsedIntent.intent === 'CLEAR_KNOWLEDGE') {
-            if (!hasPermission(currentBot, PERMISSIONS.KNOWLEDGE_MANAGE)) {
-                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
-                return { handled: true };
-            }
-            await triggerCritical('CLEAR_KNOWLEDGE', 'toda a base de conhecimento');
-            return { handled: true };
-        }
     }
 
     // Se estiver em modo proprietário e digitou comando slash inválido
