@@ -493,18 +493,41 @@ export async function handleWhatsAppAdminMessage(opts: {
     currentBot: any;
     senderJid: string;
     groupId?: string;
+    destinationJid?: string;
+    senderPn?: string;
     text: string;
     messageObj?: any;
     firestoreDb: Firestore;
     isGroup: boolean;
     onResetBot?: (botId: string) => Promise<void>;
+    sendBotMessage?: (sendOpts: any) => Promise<boolean>;
 }): Promise<{ handled: boolean }> {
-    const { sock, botId, currentBot, senderJid, groupId, text, messageObj, firestoreDb, isGroup, onResetBot } = opts;
+    const { sock, botId, currentBot, senderJid, groupId, text, messageObj, firestoreDb, isGroup, onResetBot, sendBotMessage } = opts;
     const cleanText = (text || '').trim();
     if (!cleanText) return { handled: false };
 
+    // Resolve safe reply destination: for groups, ALWAYS reply to groupId (@g.us), NEVER to participant LID!
+    const replyDestination = (isGroup && groupId) ? groupId : (opts.destinationJid || senderJid);
+    const sendReply = async (content: any, options?: any) => {
+        if (sendBotMessage) {
+            return sendBotMessage({
+                botId,
+                destinationJid: replyDestination,
+                content,
+                options,
+                context: {
+                    actionName: 'ADMIN_REPLY',
+                    chatType: isGroup ? 'GROUP' : 'PRIVATE',
+                    actorId: senderNumber
+                }
+            });
+        }
+        return sock.sendMessage(replyDestination, content, options);
+    };
+
     // 1. IDENTIFICAÇÃO DO REMETENTE
-    const senderNumber = normalizePhone(senderJid);
+    const senderPhoneRaw = opts.senderPn || senderJid;
+    const senderNumber = normalizePhone(senderPhoneRaw);
     const ownerNumber = normalizePhone(currentBot.ownerPhone || currentBot.ownerNumber);
     const isOwner = isPhoneMatch(senderNumber, ownerNumber);
     const sessionKey = getSessionKey(botId, senderJid);
@@ -555,8 +578,11 @@ export async function handleWhatsAppAdminMessage(opts: {
     // 2. PROTEÇÃO CONTRA PROMPT INJECTION E ACESSO NÃO AUTORIZADO
     // O backend autoriza estritamente pelo número de telefone, NUNCA pela IA ou pelo texto da mensagem!
     if (!isOwner) {
-        // Se um usuário comum tentar qualquer comando administrativo ou tentar fingir ser proprietário
-        if (isSlashCommand || isIntentKeyword) {
+        // Em grupos, apenas comandos explícitos iniciados com / ou ! devem disparar recusa administrativa
+        // para evitar falsos positivos quando membros conversam normalmente
+        const shouldCheckUnauthorized = isGroup ? isSlashCommand : (isSlashCommand || isIntentKeyword);
+
+        if (shouldCheckUnauthorized) {
             await recordAuditLog(firestoreDb, {
                 botId,
                 actorId: senderNumber,
@@ -565,10 +591,13 @@ export async function handleWhatsAppAdminMessage(opts: {
                 action: 'UNAUTHORIZED_ADMIN_ATTEMPT',
                 command: cleanText,
                 result: 'DENIED',
+                chatId: replyDestination,
+                destinationJid: replyDestination,
+                chatType: isGroup ? 'GROUP' : 'PRIVATE',
                 details: `Tentativa de comando administrativo por número não autorizado: ${senderNumber}`
             });
 
-            await sock.sendMessage(senderJid, {
+            await sendReply({
                 text: `⛔ *Acesso Negado*\nApenas o proprietário autorizado pode executar comandos de gerenciamento neste bot.`
             });
             return { handled: true };
@@ -601,7 +630,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'DENIED',
                 details: 'Ação crítica expirou por timeout (2 minutos)'
             });
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: `⏰ *Ação Expirada*\nO tempo limite de 2 minutos para confirmação expirou. A operação foi cancelada com segurança.`
             });
             return { handled: true };
@@ -629,7 +658,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                         details: `${historySnap.docs.length} mensagens apagadas da memória`
                     });
 
-                    await sock.sendMessage(senderJid, {
+                    await sendReply( {
                         text: `✅ *Memória Limpa*\nToda a memória e histórico de conversas deste bot foram apagados com sucesso (${historySnap.docs.length} registros).`
                     });
                     return { handled: true };
@@ -649,7 +678,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                         details: 'Toda a base de conhecimento foi limpa'
                     });
 
-                    await sock.sendMessage(senderJid, {
+                    await sendReply( {
                         text: `✅ *Base de Conhecimento Apagada*\nToda a base de conhecimento do bot foi limpa com sucesso.`
                     });
                     return { handled: true };
@@ -670,7 +699,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                         details: `Nova mensagem de boas-vindas aplicada: ${newWelcome}`
                     });
 
-                    await sock.sendMessage(senderJid, {
+                    await sendReply( {
                         text: `✅ *Mensagem de boas-vindas atualizada com sucesso!*\n\n"${newWelcome}"`
                     });
                     return { handled: true };
@@ -688,7 +717,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                         details: 'Sessão Baileys reiniciada pelo proprietário'
                     });
 
-                    await sock.sendMessage(senderJid, {
+                    await sendReply( {
                         text: `🔄 *Reiniciando Sessão WhatsApp...*\nAguarde alguns instantes enquanto a sessão é redefinida e um novo QR Code é preparado.`
                     });
 
@@ -708,7 +737,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                     result: 'ERROR',
                     details: err.message
                 });
-                await sock.sendMessage(senderJid, {
+                await sendReply( {
                     text: `❌ *Erro ao executar ação:*\n${err.message}`
                 });
                 return { handled: true };
@@ -726,12 +755,12 @@ export async function handleWhatsAppAdminMessage(opts: {
                 details: 'Operação cancelada pelo proprietário'
             });
 
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: `❌ *Ação Cancelada*\nNenhuma alteração foi realizada.`
             });
             return { handled: true };
         } else {
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: `⚠️ *Confirmação Pendente*\n\nVocê tem uma ação crítica aguardando resposta: *${pending.description}*.\n\nResponda:\n*CONFIRMAR* — para prosseguir\n*CANCELAR* — para abortar`
             });
             return { handled: true };
@@ -748,11 +777,11 @@ export async function handleWhatsAppAdminMessage(opts: {
         });
 
         if (action === 'UPDATE_WELCOME_MSG') {
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: `📝 *Nova mensagem:*\n\n${payload.newWelcome}\n\nDeseja aplicar?\n\n*SIM* / *NÃO*`
             });
         } else {
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: `⚠️ *AÇÃO CRÍTICA*\n\nIsso apagará ${description.toLowerCase()} deste bot.\n\nResponda:\n\n*CONFIRMAR*\n\npara continuar.\n(Ou *CANCELAR* para abortar)`
             });
         }
@@ -773,7 +802,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             result: 'SUCCESS'
         });
 
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `👑 *MODO PROPRIETÁRIO*\n\nVocê está administrando:\n*${currentBot.name}*\n\nDigite */ajuda* para consultar os comandos disponíveis.`
         });
         return { handled: true };
@@ -791,7 +820,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             result: 'SUCCESS'
         });
 
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `👋 *Modo Proprietário Encerrado*\nO bot voltou ao modo normal de atendimento.`
         });
         return { handled: true };
@@ -812,7 +841,7 @@ export async function handleWhatsAppAdminMessage(opts: {
         if (canKnowledge) menuText += `/conhecimento — Base de conhecimento\n`;
         menuText += `/ia — Configurações de IA\n/estatisticas — Métricas de uso\n/logs — Atividade\n/sair — Sair do modo proprietário`;
 
-        await sock.sendMessage(senderJid, { text: menuText });
+        await sendReply( { text: menuText });
         return { handled: true };
     }
 
@@ -843,7 +872,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             result: 'SUCCESS'
         });
 
-        await sock.sendMessage(senderJid, { text: statusMsg });
+        await sendReply( { text: statusMsg });
         return { handled: true };
     }
 
@@ -860,7 +889,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'DENIED',
                 details: 'Falta permissão MEMORY_MANAGE'
             });
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await updateDoc(botRef, { memoryEnabled: 1 });
@@ -873,7 +902,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             command: cleanText,
             result: 'SUCCESS'
         });
-        await sock.sendMessage(senderJid, { text: `🧠 Memória de contexto ativada.` });
+        await sendReply( { text: `🧠 Memória de contexto ativada.` });
         return { handled: true };
     }
 
@@ -889,7 +918,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'DENIED',
                 details: 'Falta permissão MEMORY_MANAGE'
             });
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await updateDoc(botRef, { memoryEnabled: 0 });
@@ -902,12 +931,12 @@ export async function handleWhatsAppAdminMessage(opts: {
             command: cleanText,
             result: 'SUCCESS'
         });
-        await sock.sendMessage(senderJid, { text: `🧠 Memória de contexto desativada.` });
+        await sendReply( { text: `🧠 Memória de contexto desativada.` });
         return { handled: true };
     }
 
     if (cmd === '/memoria') {
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `🧠 *MEMÓRIA DO BOT*\n\nEstado atual: ${currentBot.memoryEnabled ? '🟢 Ativada' : '🔴 Desativada'}\n\nComandos:\n• */memoria on* — Ativa memória de contexto\n• */memoria off* — Desativa memória\n• */limpar memoria* — Apaga todo o histórico (Ação Crítica)`
         });
         return { handled: true };
@@ -926,7 +955,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'DENIED',
                 details: 'Falta permissão GROUP_MANAGE'
             });
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await updateDoc(botRef, { respondInGroups: 1 });
@@ -939,7 +968,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             command: cleanText,
             result: 'SUCCESS'
         });
-        await sock.sendMessage(senderJid, { text: `👥 Respostas em grupos foram ativadas.` });
+        await sendReply( { text: `👥 Respostas em grupos foram ativadas.` });
         return { handled: true };
     }
 
@@ -955,7 +984,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'DENIED',
                 details: 'Falta permissão GROUP_MANAGE'
             });
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await updateDoc(botRef, { respondInGroups: 0 });
@@ -968,7 +997,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             command: cleanText,
             result: 'SUCCESS'
         });
-        await sock.sendMessage(senderJid, { text: `👥 Respostas em grupos foram desativadas.` });
+        await sendReply( { text: `👥 Respostas em grupos foram desativadas.` });
         return { handled: true };
     }
 
@@ -1006,7 +1035,7 @@ export async function handleWhatsAppAdminMessage(opts: {
         }
 
         if (adminGroups.length === 0) {
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: `👑 *GRUPOS ONDE SOU ADMIN*\n\nNenhum grupo encontrado onde este bot possui privilégios de Administrador.`
             });
             return { handled: true };
@@ -1030,7 +1059,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             msg += `\n\n_Para ver mais, digite: */grupos admin ${currentPage + 1}*_`;
         }
 
-        await sock.sendMessage(senderJid, { text: msg });
+        await sendReply( { text: msg });
         return { handled: true };
     }
 
@@ -1072,7 +1101,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 • */grupos on* — Ativar respostas em grupos
 • */grupos off* — Desativar respostas em grupos`;
 
-        await sock.sendMessage(senderJid, { text: summaryMsg });
+        await sendReply( { text: summaryMsg });
         return { handled: true };
     }
 
@@ -1089,7 +1118,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'DENIED',
                 details: 'Falta permissão BOT_CONFIG_UPDATE'
             });
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await updateDoc(botRef, { respondInPrivate: 1 });
@@ -1102,7 +1131,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             command: cleanText,
             result: 'SUCCESS'
         });
-        await sock.sendMessage(senderJid, { text: `💬 Respostas no privado foram ativadas.` });
+        await sendReply( { text: `💬 Respostas no privado foram ativadas.` });
         return { handled: true };
     }
 
@@ -1118,7 +1147,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'DENIED',
                 details: 'Falta permissão BOT_CONFIG_UPDATE'
             });
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await updateDoc(botRef, { respondInPrivate: 0 });
@@ -1131,12 +1160,12 @@ export async function handleWhatsAppAdminMessage(opts: {
             command: cleanText,
             result: 'SUCCESS'
         });
-        await sock.sendMessage(senderJid, { text: `💬 Respostas no privado foram desativadas.` });
+        await sendReply( { text: `💬 Respostas no privado foram desativadas.` });
         return { handled: true };
     }
 
     if (cmd === '/privado') {
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `💬 *CONVERSAS PRIVADAS*\n\nEstado atual: ${currentBot.respondInPrivate ? '🟢 Ativas' : '🔴 Desativadas'}\n\nComandos:\n• */privado on* — Ativa conversas privadas\n• */privado off* — Desativa conversas privadas`
         });
         return { handled: true };
@@ -1146,7 +1175,7 @@ export async function handleWhatsAppAdminMessage(opts: {
     if (cmd === '/conhecimento' || cmd === '!conhecimento') {
         const kbText = currentBot.knowledgeBase || '';
         const kbChars = kbText.length;
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `📚 *BASE DE CONHECIMENTO*\n\n• Caracteres cadastrados: ${kbChars}\n• Estado: ${kbChars > 0 ? '🟢 Ativa e Indexada' : '⚪ Vazia'}\n\nPara consultar o conteúdo:\n*/conhecimento listar*\n\nPara apagar todo o conteúdo (Ação Crítica):\n*/conhecimento limpar*`
         });
         return { handled: true };
@@ -1154,16 +1183,16 @@ export async function handleWhatsAppAdminMessage(opts: {
 
     if (cmd === '/conhecimento listar' || cmd === '!conhecimento listar') {
         if (!hasPermission(currentBot, PERMISSIONS.KNOWLEDGE_MANAGE)) {
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         const kbText = currentBot.knowledgeBase || '';
         if (!kbText) {
-            await sock.sendMessage(senderJid, { text: `📚 A base de conhecimento deste bot está atualmente vazia.` });
+            await sendReply( { text: `📚 A base de conhecimento deste bot está atualmente vazia.` });
             return { handled: true };
         }
         const preview = kbText.length > 500 ? kbText.substring(0, 500) + '...\n\n_(conteúdo truncado para visualização)_' : kbText;
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `📚 *CONTEÚDO DA BASE DE CONHECIMENTO*\n\n${preview}`
         });
         return { handled: true };
@@ -1171,7 +1200,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 
     if (cmd === '/conhecimento limpar' || cmd === '!conhecimento limpar' || cmd === '/limpar base') {
         if (!hasPermission(currentBot, PERMISSIONS.KNOWLEDGE_MANAGE)) {
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await triggerCritical('CLEAR_KNOWLEDGE', 'toda a base de conhecimento');
@@ -1183,7 +1212,7 @@ export async function handleWhatsAppAdminMessage(opts: {
         const hasKeys = !!(currentBot.geminiKeys && currentBot.geminiKeys.trim().length > 0);
         const keysCount = hasKeys ? currentBot.geminiKeys.split(',').length : 0;
 
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `🧠 *CONFIGURAÇÕES DE IA*\n\n• *Modelo:* Gemini\n• *Estado:* ATIVO\n• *Chaves configuradas:* ${hasKeys ? `SIM (${keysCount} ativas)` : 'NÃO'}`
         });
         return { handled: true };
@@ -1213,7 +1242,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             result: 'SUCCESS'
         });
 
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `📊 *ESTATÍSTICAS DO BOT*
 
 • *Mensagens hoje:* ${historySnap.docs.length}
@@ -1229,7 +1258,7 @@ export async function handleWhatsAppAdminMessage(opts: {
     if (cmd === '/logs' || cmd === '!logs') {
         const logs = await fetchAuditLogs(firestoreDb, botId, 6);
         if (logs.length === 0) {
-            await sock.sendMessage(senderJid, { text: `📋 Nenhum log registrado recentemente.` });
+            await sendReply( { text: `📋 Nenhum log registrado recentemente.` });
             return { handled: true };
         }
 
@@ -1240,14 +1269,14 @@ export async function handleWhatsAppAdminMessage(opts: {
             msg += `${icon} *${l.action}* (${l.role || 'SISTEMA'})\nHorário: ${timeStr} | Resultado: ${l.result}\n\n`;
         });
 
-        await sock.sendMessage(senderJid, { text: msg.trim() });
+        await sendReply( { text: msg.trim() });
         return { handled: true };
     }
 
     // 14. RESET DE SESSÃO
     if (cmd === '/resetar' || cmd === '/desconectar') {
         if (!hasPermission(currentBot, PERMISSIONS.WHATSAPP_MANAGE)) {
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await triggerCritical('RESET_SESSION', 'desconectar e reiniciar a sessão WhatsApp');
@@ -1257,7 +1286,7 @@ export async function handleWhatsAppAdminMessage(opts: {
     // 15. LIMPAR MEMÓRIA EXPLICITAMENTE
     if (cmd === '/limpar memoria' || cmd === '/limpar historico') {
         if (!hasPermission(currentBot, PERMISSIONS.MEMORY_MANAGE)) {
-            await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+            await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
             return { handled: true };
         }
         await triggerCritical('CLEAR_HISTORY', 'toda a memória');
@@ -1271,7 +1300,7 @@ export async function handleWhatsAppAdminMessage(opts: {
     if (parsedIntent) {
         if (parsedIntent.intent === 'UPDATE_MEMORY') {
             if (!hasPermission(currentBot, PERMISSIONS.MEMORY_MANAGE)) {
-                await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
                 return { handled: true };
             }
             const val = parsedIntent.value ? 1 : 0;
@@ -1285,7 +1314,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 command: cleanText,
                 result: 'SUCCESS'
             });
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: val ? `🧠 Memória de contexto ativada.` : `🧠 Memória de contexto desativada.`
             });
             return { handled: true };
@@ -1293,7 +1322,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 
         if (parsedIntent.intent === 'UPDATE_GROUPS') {
             if (!hasPermission(currentBot, PERMISSIONS.GROUP_MANAGE)) {
-                await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
                 return { handled: true };
             }
             const val = parsedIntent.value ? 1 : 0;
@@ -1307,7 +1336,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 command: cleanText,
                 result: 'SUCCESS'
             });
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: val ? `👥 Respostas em grupos foram ativadas.` : `👥 Respostas em grupos foram desativadas.`
             });
             return { handled: true };
@@ -1315,7 +1344,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 
         if (parsedIntent.intent === 'UPDATE_PRIVATE') {
             if (!hasPermission(currentBot, PERMISSIONS.BOT_CONFIG_UPDATE)) {
-                await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
                 return { handled: true };
             }
             const val = parsedIntent.value ? 1 : 0;
@@ -1329,7 +1358,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 command: cleanText,
                 result: 'SUCCESS'
             });
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: val ? `💬 Respostas no privado foram ativadas.` : `💬 Respostas no privado foram desativadas.`
             });
             return { handled: true };
@@ -1337,7 +1366,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 
         if (parsedIntent.intent === 'UPDATE_WELCOME_MESSAGE') {
             if (!hasPermission(currentBot, PERMISSIONS.BOT_CONFIG_UPDATE)) {
-                await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
                 return { handled: true };
             }
             await triggerCritical('UPDATE_WELCOME_MSG', 'alterar mensagem de boas-vindas', {
@@ -1372,7 +1401,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                 result: 'SUCCESS'
             });
 
-            await sock.sendMessage(senderJid, { text: statusMsg });
+            await sendReply( { text: statusMsg });
             return { handled: true };
         }
 
@@ -1386,7 +1415,7 @@ export async function handleWhatsAppAdminMessage(opts: {
             });
             const errorLogs = auditLogs.filter(l => l.result === 'DENIED' || l.result === 'ERROR');
 
-            await sock.sendMessage(senderJid, {
+            await sendReply( {
                 text: `📊 *ESTATÍSTICAS DO BOT*
 
 • *Mensagens hoje:* ${historySnap.docs.length}
@@ -1400,7 +1429,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 
         if (parsedIntent.intent === 'CLEAR_MEMORY') {
             if (!hasPermission(currentBot, PERMISSIONS.MEMORY_MANAGE)) {
-                await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
                 return { handled: true };
             }
             await triggerCritical('CLEAR_HISTORY', 'toda a memória');
@@ -1409,7 +1438,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 
         if (parsedIntent.intent === 'CLEAR_KNOWLEDGE') {
             if (!hasPermission(currentBot, PERMISSIONS.KNOWLEDGE_MANAGE)) {
-                await sock.sendMessage(senderJid, { text: `⛔ Você não possui permissão para executar esta ação.` });
+                await sendReply( { text: `⛔ Você não possui permissão para executar esta ação.` });
                 return { handled: true };
             }
             await triggerCritical('CLEAR_KNOWLEDGE', 'toda a base de conhecimento');
@@ -1419,7 +1448,7 @@ export async function handleWhatsAppAdminMessage(opts: {
 
     // Se estiver em modo proprietário e digitou comando slash inválido
     if (isOwnerModeActive && isSlashCommand) {
-        await sock.sendMessage(senderJid, {
+        await sendReply( {
             text: `❓ *Comando não reconhecido.*\nDigite */ajuda* para consultar os comandos ou */sair* para voltar ao atendimento normal.`
         });
         return { handled: true };

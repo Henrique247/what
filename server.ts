@@ -35,6 +35,13 @@ import { handleWhatsAppAdminMessage } from './src/whatsappController';
 import { processGroupModeration, getGroupConfig, getGroupMeta, recordGroupLog, isBotParticipantAdmin, clearGroupMetaCache } from './src/services/groupModeration';
 import { initBotGroupSchedulers, clearBotSchedulers, scheduleGroupMotivation, sendDailyMotivationToGroup } from './src/services/groupScheduler';
 import { GroupConfig } from './src/types';
+import { 
+    resolveMessageDestination, 
+    sendBotMessage, 
+    extractMediaMessage, 
+    hasValidMediaKey, 
+    isAllowedDestination 
+} from './src/services/whatsappPipeline';
 
 const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
 
@@ -267,52 +274,21 @@ async function safeSendMessage(
     botId: string, 
     jid: string, 
     content: any, 
-    options?: any
+    options?: any,
+    context?: any
 ): Promise<boolean> {
-    try {
-        const sock = activeSocks.get(botId);
-        const status = connectionStatuses.get(botId);
-
-        if (!sock || status !== 'Conectado') {
-            console.warn(`[Bot ${botId}] Envio bloqueado: Bot desconectado (${status || 'OFFLINE'}). JID: ${jid}`);
-            await recordAuditLog(firestoreDb, {
-                botId,
-                action: 'MESSAGE_SEND_FAILED',
-                result: 'ERROR',
-                chatId: jid,
-                details: `Bot não está conectado. Status atual: ${status || 'OFFLINE'}`
-            });
-            return false;
-        }
-
-        if (!jid || (!jid.endsWith('@s.whatsapp.net') && !jid.endsWith('@g.us'))) {
-            console.warn(`[Bot ${botId}] JID com formato inválido para envio: ${jid}`);
-            await recordAuditLog(firestoreDb, {
-                botId,
-                action: 'MESSAGE_SEND_FAILED',
-                result: 'ERROR',
-                chatId: jid,
-                details: `JID inválido: ${jid}`
-            });
-            return false;
-        }
-
-        await sock.sendMessage(jid, content, options);
-        return true;
-    } catch (err: any) {
-        console.error(`[Bot ${botId}] Erro ao enviar mensagem para ${jid}:`, err);
-        await recordAuditLog(firestoreDb, {
+    return sendBotMessage(
+        {
             botId,
-            action: 'MESSAGE_SEND_ERROR',
-            result: 'ERROR',
-            chatId: jid,
-            details: err.message || 'Erro de envio via Baileys',
-            errorCode: err.code || 'SEND_ERROR',
-            errorMessage: err.message,
-            stack: err.stack
-        });
-        return false;
-    }
+            destinationJid: jid,
+            content,
+            options,
+            context
+        },
+        firestoreDb,
+        (id) => activeSocks.get(id),
+        (id) => connectionStatuses.get(id)
+    );
 }
 
 // Global Process Crash Prevention & Audit
@@ -595,10 +571,10 @@ async function startBot(botId: string) {
                 const finalMsg = rawTemplate.replace(/@user/g, `@${norm}`);
 
                 try {
-                    await sock.sendMessage(id, { 
+                    await safeSendMessage(botId, id, { 
                         text: finalMsg, 
                         mentions: [jid] 
-                    });
+                    }, undefined, { actionName: 'GROUP_WELCOME', chatType: 'GROUP' });
                 } catch (err) {
                     console.error(`[Bot ${botId}] Erro ao enviar boas-vindas:`, err);
                 }
@@ -613,7 +589,7 @@ async function startBot(botId: string) {
                 const rawTemplate = groupConfig.exitMessage || currentBot.groupExitMsg || `@user saiu do grupo.`;
                 const finalMsg = rawTemplate.replace(/@user/g, `@${norm}`);
                 try {
-                    await sock.sendMessage(id, { text: finalMsg });
+                    await safeSendMessage(botId, id, { text: finalMsg }, undefined, { actionName: 'GROUP_EXIT', chatType: 'GROUP' });
                 } catch (err) {
                     console.error(`[Bot ${botId}] Erro ao enviar mensagem de saída:`, err);
                 }
@@ -628,10 +604,82 @@ async function startBot(botId: string) {
             try {
                 if (!msg || !msg.message) continue;
 
-                const jid = msg.key.remoteJid;
-                if (!jid) continue;
+                // 1. Resolução centralizada do destino da mensagem e classificação do tipo de chat
+                const resolved = await resolveMessageDestination(msg, botId, sock);
+                const { chatType, destinationJid, senderJid, remoteJid, participantJid, canReply, reason, senderPn, senderLid } = resolved;
 
-                const isGroup = jid.endsWith('@g.us');
+                if (!remoteJid) continue;
+
+                // 2. Registro do log de recebimento de mensagem
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    action: 'MESSAGE_RECEIVED',
+                    result: 'SUCCESS',
+                    chatId: remoteJid,
+                    remoteJid,
+                    senderJid,
+                    chatType,
+                    messageId: msg.key?.id || undefined,
+                    details: `Mensagem recebida em chat do tipo ${chatType}`
+                });
+
+                // 3. Registro do log de resolução de destino
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    action: 'MESSAGE_DESTINATION_RESOLVED',
+                    result: canReply ? 'SUCCESS' : 'SKIPPED',
+                    chatId: remoteJid,
+                    remoteJid,
+                    senderJid,
+                    destinationJid: destinationJid || undefined,
+                    chatType,
+                    messageId: msg.key?.id || undefined,
+                    details: canReply ? `Destino resolvido para ${destinationJid}` : (reason || 'Destino não suporta respostas automáticas')
+                });
+
+                // 4. Tratamento específico para Canais / Newsletters: Somente leitura, nunca responder
+                if (chatType === 'NEWSLETTER') {
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'NEWSLETTER_MESSAGE_IGNORED',
+                        result: 'IGNORED',
+                        chatId: remoteJid,
+                        remoteJid,
+                        senderJid,
+                        chatType: 'NEWSLETTER',
+                        messageId: msg.key?.id || undefined,
+                        details: 'Mensagem de canal/newsletter ignorada para resposta'
+                    });
+                    continue;
+                }
+
+                // 5. Tratamento para Broadcast / Status
+                if (chatType === 'BROADCAST') {
+                    continue;
+                }
+
+                // 6. Se o destino não puder receber respostas (ex: LID sem mapeamento ou inválido)
+                if (!canReply || !destinationJid) {
+                    if (chatType === 'LID') {
+                        await recordAuditLog(firestoreDb, {
+                            botId,
+                            action: 'JID_RESOLUTION_FAILED',
+                            result: 'ERROR',
+                            chatId: remoteJid,
+                            remoteJid,
+                            senderJid,
+                            chatType: 'LID',
+                            messageId: msg.key?.id || undefined,
+                            details: reason || 'Falha ao resolver JID de LID para resposta'
+                        });
+                    }
+                    continue;
+                }
+
+                // Para grupos (@g.us), destinationJid é SEMPRE o grupo (remoteJid) e NÃO o participant!
+                const isGroup = chatType === 'GROUP';
+                const targetChatJid = destinationJid;
+
                 const messageType = Object.keys(msg.message)[0];
                 const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || "";
                 const cleanText = (text || '').trim();
@@ -656,12 +704,15 @@ async function startBot(botId: string) {
                     sock,
                     botId,
                     currentBot,
-                    senderJid: msg.key.participant || jid,
-                    groupId: isGroup ? jid : undefined,
+                    senderJid,
+                    groupId: isGroup ? remoteJid : undefined,
+                    destinationJid: targetChatJid,
+                    senderPn,
                     text: cleanText,
                     messageObj: msg.message,
                     firestoreDb,
                     isGroup,
+                    sendBotMessage: (sendOpts) => safeSendMessage(sendOpts.botId, sendOpts.destinationJid, sendOpts.content, sendOpts.options, sendOpts.context),
                     onResetBot: async (targetBotId: string) => {
                         await resetBotSession(targetBotId);
                     }
@@ -673,12 +724,11 @@ async function startBot(botId: string) {
 
                 // Executa Moderação Determinística em Grupos
                 if (isGroup) {
-                    const senderJid = msg.key.participant || jid;
                     const modResult = await processGroupModeration({
                         sock,
                         botId,
                         currentBot,
-                        groupId: jid,
+                        groupId: remoteJid,
                         senderJid,
                         messageKey: msg.key,
                         rawText: text,
@@ -698,9 +748,10 @@ async function startBot(botId: string) {
                 const isReplyToBot = contextInfo?.participant && isPhoneMatch(normalizePhone(contextInfo.participant), botPhone);
 
                 // Check for media
-                const isImage = messageType === 'imageMessage';
-                const isDocument = messageType === 'documentMessage';
-                const isPdf = isDocument && msg.message.documentMessage?.mimetype === 'application/pdf';
+                const mediaInfo = extractMediaMessage(msg.message);
+                const isImage = messageType === 'imageMessage' || mediaInfo?.mediaType === 'image';
+                const isDocument = messageType === 'documentMessage' || mediaInfo?.mediaType === 'document';
+                const isPdf = isDocument && (msg.message.documentMessage?.mimetype === 'application/pdf' || (mediaInfo?.mediaObj as any)?.mimetype === 'application/pdf');
 
                 if ((isImage || isPdf) && !currentBot.analysisEnabled) continue;
                 if (!cleanText && !isImage && !isPdf) continue;
@@ -711,7 +762,7 @@ async function startBot(botId: string) {
 
                 // Handle private exit command
                 if (!isGroup && cleanText.toLowerCase() === '!sair' && currentBot.privateExitEnabled) {
-                    await safeSendMessage(botId, jid, { text: currentBot.exitMsg || "Até logo!" });
+                    await safeSendMessage(botId, targetChatJid, { text: currentBot.exitMsg || "Até logo!" });
                     continue;
                 }
 
@@ -722,39 +773,83 @@ async function startBot(botId: string) {
                         botId,
                         action: 'AI_UNAVAILABLE',
                         result: 'ERROR',
+                        chatId: targetChatJid,
                         details: 'Nenhuma chave Gemini disponível'
                     });
                     continue;
                 }
 
-                const history = currentBot.memoryEnabled ? await getHistory(botId, jid) : [];
+                const history = currentBot.memoryEnabled ? await getHistory(botId, targetChatJid) : [];
                 
                 // Handle private welcome message (first contact)
                 if (!isGroup && history.length === 0 && currentBot.privateWelcomeEnabled) {
-                    await safeSendMessage(botId, jid, { text: currentBot.welcomeMsg || "Olá! Como posso ajudar?" });
+                    await safeSendMessage(botId, targetChatJid, { text: currentBot.welcomeMsg || "Olá! Como posso ajudar?" });
                 }
 
                 const parts: any[] = [];
                 if (cleanText) parts.push({ text: cleanText });
 
                 if ((isImage || isPdf) && currentBot.analysisEnabled) {
-                    console.log(`[Bot ${botId}] Baixando mídia para análise...`);
-                    const buffer = await downloadMediaMessage(msg, 'buffer', {});
-                    const mimeType = isImage ? 'image/jpeg' : 'application/pdf';
-                    parts.push({
-                        inlineData: {
-                            data: buffer.toString('base64'),
-                            mimeType
+                    // Validação de mediaKey antes da chamada Baileys downloadMediaMessage
+                    const validKey = hasValidMediaKey(mediaInfo?.mediaObj);
+
+                    if (!validKey) {
+                        console.warn(`[Bot ${botId}] Mídia recebida sem mediaKey válida de ${senderJid}. Download suspenso.`);
+                        await recordAuditLog(firestoreDb, {
+                            botId,
+                            action: 'MEDIA_DOWNLOAD_SKIPPED',
+                            result: 'SKIPPED',
+                            chatId: targetChatJid,
+                            remoteJid,
+                            senderJid,
+                            chatType,
+                            mediaType: mediaInfo?.mediaType || (isImage ? 'image' : 'pdf'),
+                            messageId: msg.key?.id || undefined,
+                            details: 'Mídia sem mediaKey válida ou chave expirada no WhatsApp. Download suspenso com segurança.'
+                        });
+                    } else {
+                        try {
+                            console.log(`[Bot ${botId}] Baixando mídia para análise...`);
+                            const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                            const mimeType = isImage ? 'image/jpeg' : 'application/pdf';
+                            parts.push({
+                                inlineData: {
+                                    data: buffer.toString('base64'),
+                                    mimeType
+                                }
+                            });
+                            if (currentBot.analysisInstructions) {
+                                parts.push({ text: `\n\nINSTRUÇÕES DE ANÁLISE:\n${currentBot.analysisInstructions}` });
+                            }
+                        } catch (mediaErr: any) {
+                            console.error(`[Bot ${botId}] Erro ao baixar/descriptografar mídia:`, mediaErr);
+                            await recordAuditLog(firestoreDb, {
+                                botId,
+                                action: 'MEDIA_PROCESSING_FAILED',
+                                result: 'ERROR',
+                                chatId: targetChatJid,
+                                remoteJid,
+                                senderJid,
+                                chatType,
+                                mediaType: mediaInfo?.mediaType || (isImage ? 'image' : 'pdf'),
+                                messageId: msg.key?.id || undefined,
+                                errorCode: 'MEDIA_DOWNLOAD_ERROR',
+                                errorName: mediaErr.name || 'MediaDownloadError',
+                                errorMessage: mediaErr.message || String(mediaErr),
+                                details: `Falha ao processar arquivo de mídia: ${mediaErr.message || 'chave inválida ou download corrompido'}`
+                            });
                         }
-                    });
-                    if (currentBot.analysisInstructions) {
-                        parts.push({ text: `\n\nINSTRUÇÕES DE ANÁLISE:\n${currentBot.analysisInstructions}` });
                     }
                 }
 
-                await saveMessage(botId, jid, 'user', cleanText || "[Mídia enviada]");
+                // Se era apenas mensagem de mídia e a mídia foi ignorada/falhou, não envia prompt vazio para IA
+                if (parts.length === 0) {
+                    continue;
+                }
 
-                const isOwner = currentBot.ownerNumber && jid.includes(currentBot.ownerNumber);
+                await saveMessage(botId, targetChatJid, 'user', cleanText || "[Mídia enviada]");
+
+                const isOwner = currentBot.ownerNumber && (targetChatJid.includes(currentBot.ownerNumber) || senderJid.includes(currentBot.ownerNumber));
                 let ownerInstruction = "";
                 if (isOwner) {
                     ownerInstruction = `\n\nVOCÊ ESTÁ FALANDO COM SEU PROPRIETÁRIO: ${currentBot.ownerName || 'Proprietário'}. Ele tem permissão total. Se ele pedir relatórios, resumos ou informações sobre o sistema, forneça-os de forma clara e detalhada.`;
@@ -804,7 +899,7 @@ async function startBot(botId: string) {
 
                 const responseText = response?.text;
                 if (responseText) {
-                    await saveMessage(botId, jid, 'model', responseText);
+                    await saveMessage(botId, targetChatJid, 'model', responseText);
                     
                     const pdfMatch = responseText.match(/<pdf>([\s\S]*?)<\/pdf>/i);
                     
@@ -815,10 +910,10 @@ async function startBot(botId: string) {
                             const cleanTextOutsidePdf = responseText.replace(/<pdf>[\s\S]*?<\/pdf>/gi, '').trim();
                             
                             if (cleanTextOutsidePdf) {
-                                await safeSendMessage(botId, jid, { text: cleanTextOutsidePdf });
+                                await safeSendMessage(botId, targetChatJid, { text: cleanTextOutsidePdf });
                             }
                             
-                            await safeSendMessage(botId, jid, { 
+                            await safeSendMessage(botId, targetChatJid, { 
                                 document: pdfBuffer, 
                                 mimetype: 'application/pdf', 
                                 fileName: 'documento.pdf',
@@ -826,10 +921,10 @@ async function startBot(botId: string) {
                             });
                         } catch (pdfErr: any) {
                             console.error(`[Bot ${botId}] Erro ao gerar PDF:`, pdfErr);
-                            await safeSendMessage(botId, jid, { text: responseText });
+                            await safeSendMessage(botId, targetChatJid, { text: responseText });
                         }
                     } else {
-                        await safeSendMessage(botId, jid, { text: responseText });
+                        await safeSendMessage(botId, targetChatJid, { text: responseText });
                     }
                 }
             } catch (e: any) {
@@ -2407,91 +2502,10 @@ async function connectWA() {
     // This function is now replaced by startBot(botId) logic
 }
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-
-function killProcessOnPort(port: number) {
-    try {
-        const hexPort = port.toString(16).toUpperCase().padStart(4, '0');
-        const inodes = new Set<string>();
-
-        for (const filePath of ['/proc/net/tcp', '/proc/net/tcp6']) {
-            if (!fs.existsSync(filePath)) continue;
-            const tcpData = fs.readFileSync(filePath, 'utf8');
-            const lines = tcpData.split('\n');
-            for (const line of lines) {
-                const parts = line.trim().split(/\s+/);
-                if (parts.length > 9) {
-                    const localAddr = parts[1];
-                    const state = parts[3]; // '0A' is TCP_LISTEN
-                    if (localAddr.endsWith(':' + hexPort) && state === '0A') {
-                        inodes.add(parts[9]);
-                    }
-                }
-            }
-        }
-
-        if (inodes.size === 0) return;
-
-        const currentPid = process.pid;
-        const pids = fs.readdirSync('/proc').filter(p => /^\d+$/.test(p));
-        for (const pidStr of pids) {
-            const pid = parseInt(pidStr, 10);
-            if (pid === currentPid) continue;
-            try {
-                const fdDir = `/proc/${pid}/fd`;
-                if (!fs.existsSync(fdDir)) continue;
-                const fds = fs.readdirSync(fdDir);
-                for (const fd of fds) {
-                    try {
-                        const link = fs.readlinkSync(`${fdDir}/${fd}`);
-                        for (const inode of inodes) {
-                            if (link === `socket:[${inode}]`) {
-                                console.log(`[PortManager] Liberando porta ${port}: encerrando processo órfão (PID ${pid})...`);
-                                process.kill(pid, 'SIGKILL');
-                                break;
-                            }
-                        }
-                    } catch {}
-                }
-            } catch {}
-        }
-    } catch (e) {
-        console.warn('[PortManager] Verificação de porta:', e);
-    }
-}
+const PORT = 3000;
 
 let server: any = null;
-let retryCount = 0;
-const MAX_RETRIES = 5;
 
-function startHttpServer() {
-    server = app.listen(PORT, '0.0.0.0', () => {
-        console.log(`Painel TechStar Multi-Bot rodando na porta ${PORT}`);
-    });
-
-    server.on('error', (err: any) => {
-        if (err.code === 'EADDRINUSE') {
-            console.warn(`[Server] Porta ${PORT} ocupada (EADDRINUSE). Tentativa ${retryCount + 1}/${MAX_RETRIES}...`);
-            killProcessOnPort(PORT);
-            if (retryCount < MAX_RETRIES) {
-                retryCount++;
-                setTimeout(() => {
-                    try {
-                        if (server) server.close();
-                    } catch {}
-                    startHttpServer();
-                }, 1000);
-            } else {
-                console.error(`[Server] Falha crítica: porta ${PORT} indisponível após ${MAX_RETRIES} tentativas.`);
-                process.exit(1);
-            }
-        } else {
-            console.error('[Server] Erro no servidor HTTP:', err);
-        }
-    });
-}
-
-// Configuração do Vite Frontend Middleware e Inicialização
 async function setupFrontendAndListen() {
     if (process.env.NODE_ENV !== 'production') {
         const vite = await createViteServer({
@@ -2507,8 +2521,9 @@ async function setupFrontendAndListen() {
         });
     }
 
-    killProcessOnPort(PORT);
-    startHttpServer();
+    server = app.listen(PORT, '0.0.0.0', () => {
+        console.log(`Painel TechStar Multi-Bot rodando na porta ${PORT}`);
+    });
 }
 
 setupFrontendAndListen();

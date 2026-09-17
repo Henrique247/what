@@ -10,7 +10,7 @@ export interface AuditLogEntry {
     actorRole?: 'OWNER' | 'ADMIN' | 'USER' | 'SYSTEM';
     action: string;
     command?: string;
-    result: 'SUCCESS' | 'DENIED' | 'ERROR';
+    result: 'SUCCESS' | 'DENIED' | 'ERROR' | 'SKIPPED' | 'IGNORED' | string;
     details?: string;
     errorCode?: string;
     errorName?: string;
@@ -22,6 +22,14 @@ export interface AuditLogEntry {
     chatId?: string;
     groupId?: string;
     senderJid?: string;
+    destinationJid?: string;
+    remoteJid?: string;
+    participantJid?: string;
+    chatType?: string;
+    messageId?: string;
+    mediaType?: string;
+    payloadSummary?: string;
+    latencyMs?: number;
     fieldsChanged?: string[];
     oldValue?: any;
     newValue?: any;
@@ -89,6 +97,14 @@ export async function recordAuditLog(firestoreDb: Firestore, entry: AuditLogEntr
         if (entry.chatId) docData.chatId = entry.chatId;
         if (entry.groupId) docData.groupId = entry.groupId;
         if (entry.senderJid) docData.senderJid = entry.senderJid;
+        if (entry.destinationJid) docData.destinationJid = entry.destinationJid;
+        if (entry.remoteJid) docData.remoteJid = entry.remoteJid;
+        if (entry.participantJid) docData.participantJid = entry.participantJid;
+        if (entry.chatType) docData.chatType = entry.chatType;
+        if (entry.messageId) docData.messageId = entry.messageId;
+        if (entry.mediaType) docData.mediaType = entry.mediaType;
+        if (entry.payloadSummary) docData.payloadSummary = entry.payloadSummary;
+        if (entry.latencyMs !== undefined) docData.latencyMs = entry.latencyMs;
         if (entry.fieldsChanged) docData.fieldsChanged = entry.fieldsChanged;
         if (entry.oldValue !== undefined) docData.oldValue = sanitizeValue(entry.oldValue);
         if (entry.newValue !== undefined) docData.newValue = sanitizeValue(entry.newValue);
