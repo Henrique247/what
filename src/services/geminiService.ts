@@ -135,8 +135,11 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
         const currentKey = rawKeys[keyIndex % rawKeys.length];
         const maskedKey = maskApiKey(currentKey);
         const currentModel = GEMINI_FALLBACK_MODELS[modelIndex];
+        const requestStartTime = Date.now();
 
         try {
+            console.log(`[GEMINI_REQUEST] Bot: ${botId} | Modelo: ${currentModel} | Chave: ${maskedKey} | Tentativa: ${attempts}/${maxTotalAttempts}`);
+
             const ai = new GoogleGenAI({
                 apiKey: currentKey,
                 httpOptions: {
@@ -156,13 +159,26 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
 
             const response = await ai.models.generateContent({
                 model: currentModel,
-                contents: contentsPayload.length === 1 && typeof contentsPayload[0]?.parts?.[0]?.text === 'string' && contentsPayload.length === 1 && !history.length
+                contents: contentsPayload.length === 1 && typeof contentsPayload[0]?.parts?.[0]?.text === 'string' && !history.length
                     ? contentsPayload[0].parts[0].text
                     : contentsPayload,
                 config: Object.keys(genConfig).length > 0 ? genConfig : undefined
             });
 
             const outputText = response.text || null;
+            const durationMs = Date.now() - requestStartTime;
+
+            console.log(`[GEMINI_RESPONSE_SUCCESS] Bot: ${botId} | Modelo: ${currentModel} | Duração: ${durationMs}ms | Chave: ${maskedKey}`);
+
+            if (firestoreDb) {
+                recordAuditLog(firestoreDb, {
+                    botId,
+                    action: 'GEMINI_RESPONSE_SUCCESS',
+                    result: 'SUCCESS',
+                    duration: durationMs,
+                    details: `Resposta gerada com sucesso pelo modelo ${currentModel} em ${durationMs}ms (chave: ${maskedKey})`
+                }).catch(() => {});
+            }
 
             // Update key index for next round
             botKeyIndexMap.set(botId, (keyIndex + 1) % rawKeys.length);
@@ -177,6 +193,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
 
         } catch (err: any) {
             lastError = err;
+            const durationMs = Date.now() - requestStartTime;
             const errMsg = sanitizeErrorMessage(err?.message || String(err));
             const is404 = errMsg.includes('not found') || errMsg.includes('404') || errMsg.includes('NOT_FOUND') || err?.status === 404;
             const is503 = errMsg.includes('503') || errMsg.includes('high demand') || errMsg.includes('UNAVAILABLE') || errMsg.includes('unavailable') || err?.status === 503;
@@ -192,6 +209,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                     errorCode: 404,
                     errorName: err?.name || 'ModelNotFoundError',
                     errorMessage: errMsg,
+                    durationMs,
                     timestamp: new Date().toISOString()
                 });
 
@@ -200,7 +218,8 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                         botId,
                         action: 'GEMINI_MODEL_NOT_FOUND',
                         result: 'ERROR',
-                        details: `Modelo ${currentModel} não encontrado no v1beta. Tentando fallback.`
+                        duration: durationMs,
+                        details: `Modelo ${currentModel} não encontrado no v1beta. Tentando fallback para próximo modelo.`
                     }).catch(() => {});
                 }
 
@@ -214,6 +233,16 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                 const backoffMs = Math.min(1000 * Math.pow(2, attempts - 1), 4000);
                 console.warn(`[GEMINI_503_HIGH_DEMAND] Bot ${botId} - Modelo ${currentModel} sobrecarregado. Backoff de ${backoffMs}ms (Tentativa ${attempts}/${maxTotalAttempts})`);
                 
+                if (firestoreDb) {
+                    recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'GEMINI_503_HIGH_DEMAND',
+                        result: 'ERROR',
+                        duration: durationMs,
+                        details: `Modelo ${currentModel} temporariamente indisponível (503). Aplicando backoff de ${backoffMs}ms.`
+                    }).catch(() => {});
+                }
+
                 await new Promise(resolve => setTimeout(resolve, backoffMs));
                 // Try next key if available
                 if (rawKeys.length > 1) {
@@ -225,12 +254,32 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
             // 3. TRATAMENTO DE ERRO 429 (QUOTA EXAURIDA)
             if (is429) {
                 console.warn(`[GEMINI_429_QUOTA] Bot ${botId} - Chave ${maskedKey} atingiu limite de quota. Rotacionando para próxima chave.`);
+                
+                if (firestoreDb) {
+                    recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'GEMINI_429_QUOTA',
+                        result: 'ERROR',
+                        duration: durationMs,
+                        details: `Chave ${maskedKey} atingiu limite de quota (429). Rotacionando para próxima chave configurada.`
+                    }).catch(() => {});
+                }
+
                 keyIndex++;
                 continue;
             }
 
             // Other errors: try next key once or next model
             console.error(`[GEMINI_API_ERROR] Bot ${botId} - Erro na chamada Gemini:`, errMsg);
+            if (firestoreDb) {
+                recordAuditLog(firestoreDb, {
+                    botId,
+                    action: 'GEMINI_KEY_FAILED',
+                    result: 'ERROR',
+                    duration: durationMs,
+                    details: `Chave ${maskedKey} falhou: ${errMsg}`
+                }).catch(() => {});
+            }
             keyIndex++;
         }
     }
@@ -240,9 +289,9 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
     if (firestoreDb) {
         recordAuditLog(firestoreDb, {
             botId,
-            action: 'GEMINI_PROCESSING_ERROR',
+            action: 'GEMINI_ALL_ATTEMPTS_FAILED',
             result: 'ERROR',
-            details: `Falha após ${attempts} tentativas: ${finalErrMsg}`
+            details: `Falha após ${attempts} tentativas com todas as chaves e modelos: ${finalErrMsg}`
         }).catch(() => {});
     }
 

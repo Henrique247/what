@@ -697,8 +697,35 @@ async function startBot(botId: string) {
 
                 // Reload bot config for each message
                 const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+                if (!botDoc.exists()) {
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'MESSAGE_PROCESSING_SKIPPED',
+                        result: 'SKIPPED',
+                        chatId: remoteJid,
+                        remoteJid,
+                        senderJid,
+                        chatType,
+                        details: 'Documento do bot não encontrado no banco de dados'
+                    });
+                    continue;
+                }
+
                 const currentBot = botDoc.data();
-                if (!currentBot || !currentBot.active) continue;
+                const isBotActive = currentBot.active !== false && currentBot.active !== 0;
+                if (!isBotActive) {
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'MESSAGE_PROCESSING_SKIPPED',
+                        result: 'SKIPPED',
+                        chatId: remoteJid,
+                        remoteJid,
+                        senderJid,
+                        chatType,
+                        details: 'Bot inativo/desativado nas configurações'
+                    });
+                    continue;
+                }
 
                 const identity = await resolveOwnWhatsAppIdentity(sock, currentBot, botId, firestoreDb);
                 const isFromSelf = !!msg.key.fromMe || isSelfIdentity(senderJid, identity, sock);
@@ -792,14 +819,63 @@ async function startBot(botId: string) {
 
                 if ((isImage || isPdf) && !currentBot.analysisEnabled) {
                     if (isGroup) console.log('[GROUP_MESSAGE_SKIPPED]', { botId, groupId: remoteJid, reason: 'MEDIA_ANALYSIS_DISABLED' });
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'MESSAGE_PROCESSING_SKIPPED',
+                        result: 'SKIPPED',
+                        chatId: targetChatJid,
+                        remoteJid,
+                        senderJid,
+                        chatType,
+                        details: 'Análise de mídia desativada nas configurações do bot'
+                    });
                     continue;
                 }
                 if (!cleanText && !isImage && !isPdf) {
                     if (isGroup) console.log('[GROUP_MESSAGE_SKIPPED]', { botId, groupId: remoteJid, reason: 'EMPTY_TEXT_AND_NO_MEDIA' });
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'MESSAGE_PROCESSING_SKIPPED',
+                        result: 'SKIPPED',
+                        chatId: targetChatJid,
+                        remoteJid,
+                        senderJid,
+                        chatType,
+                        details: 'Mensagem recebida sem conteúdo textual ou de mídia suportada'
+                    });
                     continue;
                 }
 
-                if (!isGroup && !currentBot.respondInPrivate) continue;
+                const isPrivateAllowed = currentBot.respondInPrivate !== false && currentBot.respondInPrivate !== 0;
+                const isGroupAllowed = currentBot.respondInGroups !== false && currentBot.respondInGroups !== 0;
+
+                if (!isGroup && !isPrivateAllowed) {
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'MESSAGE_PROCESSING_SKIPPED',
+                        result: 'SKIPPED',
+                        chatId: targetChatJid,
+                        remoteJid,
+                        senderJid,
+                        chatType,
+                        details: 'Respostas em conversas privadas desativadas para este bot'
+                    });
+                    continue;
+                }
+
+                if (isGroup && !isGroupAllowed) {
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'MESSAGE_PROCESSING_SKIPPED',
+                        result: 'SKIPPED',
+                        chatId: targetChatJid,
+                        remoteJid,
+                        senderJid,
+                        chatType,
+                        details: 'Respostas em grupos desativadas para este bot'
+                    });
+                    continue;
+                }
 
                 // Handle private exit command
                 if (!isGroup && cleanText.toLowerCase() === '!sair' && currentBot.privateExitEnabled) {
@@ -816,7 +892,22 @@ async function startBot(botId: string) {
                 }
 
                 const geminiKeysConfig = currentBot.geminiKeys || currentBot.geminiKey || process.env.GEMINI_API_KEY || "";
-                if (!geminiKeysConfig.trim()) {
+                const hasGeminiKeys = !!geminiKeysConfig.trim();
+                const isOwner = !!(currentBot.ownerNumber && (targetChatJid.includes(currentBot.ownerNumber) || senderJid.includes(currentBot.ownerNumber)));
+
+                // Log AI_PROCESSING_CHECK before invoking model
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    action: 'AI_PROCESSING_CHECK',
+                    result: hasGeminiKeys ? 'SUCCESS' : 'SKIPPED',
+                    chatId: targetChatJid,
+                    remoteJid,
+                    senderJid,
+                    chatType,
+                    details: `Verificação de IA: chatType=${chatType}, isGroup=${isGroup}, respondInPrivate=${isPrivateAllowed}, respondInGroups=${isGroupAllowed}, hasGeminiKeys=${hasGeminiKeys}, isOwner=${isOwner}`
+                });
+
+                if (!hasGeminiKeys) {
                     console.warn(`[Bot ${botId}] Nenhuma chave Gemini configurada. Atendimento AI suspenso.`);
                     await recordAuditLog(firestoreDb, {
                         botId,
@@ -898,19 +989,31 @@ async function startBot(botId: string) {
 
                 await saveMessage(botId, targetChatJid, 'user', cleanText || "[Mídia enviada]");
 
-                const isOwner = currentBot.ownerNumber && (targetChatJid.includes(currentBot.ownerNumber) || senderJid.includes(currentBot.ownerNumber));
                 let ownerInstruction = "";
                 if (isOwner) {
                     ownerInstruction = `\n\nVOCÊ ESTÁ FALANDO COM SEU PROPRIETÁRIO: ${currentBot.ownerName || 'Proprietário'}. Ele tem permissão total. Se ele pedir relatórios, resumos ou informações sobre o sistema, forneça-os de forma clara e detalhada.`;
                 }
 
                 const pdfInstruction = "\n\nSe o usuário solicitar um PDF ou se você achar que a resposta deve ser um documento formal, escreva o conteúdo que deve ir no PDF entre as tags <pdf> e </pdf>. O sistema converterá automaticamente esse conteúdo em um arquivo PDF e enviará ao usuário.";
-                const fullSystemPrompt = `${currentBot.systemPrompt || ''}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
+                const baseSystemPrompt = currentBot.systemPrompt || "Você é um assistente útil e prestativo. Responda de forma clara, natural e objetiva.";
+                const fullSystemPrompt = `${baseSystemPrompt}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
                 
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    action: 'AI_REQUEST_STARTED',
+                    result: 'SUCCESS',
+                    chatId: targetChatJid,
+                    remoteJid,
+                    senderJid,
+                    chatType,
+                    messageId: msg.key?.id || undefined,
+                    details: `Iniciando requisição de IA para mensagem de ${cleanText.length} caracteres no chat ${chatType}`
+                });
+
                 // Centralized and resilient Gemini generation with multi-key rotation, 404 fallback, and 503 backoff
                 const geminiResult = await generateGeminiContent({
                     botId,
-                    geminiKeysStr: currentBot.geminiKey,
+                    geminiKeysStr: geminiKeysConfig,
                     history,
                     userParts: parts,
                     systemInstruction: fullSystemPrompt,
@@ -930,7 +1033,11 @@ async function startBot(botId: string) {
                             const cleanTextOutsidePdf = responseText.replace(/<pdf>[\s\S]*?<\/pdf>/gi, '').trim();
                             
                             if (cleanTextOutsidePdf) {
-                                await safeSendMessage(botId, targetChatJid, { text: cleanTextOutsidePdf });
+                                await safeSendMessage(botId, targetChatJid, { text: cleanTextOutsidePdf }, undefined, {
+                                    actionName: 'AI_REPLY',
+                                    chatType,
+                                    messageId: msg.key?.id
+                                });
                             }
                             
                             await safeSendMessage(botId, targetChatJid, { 
@@ -938,13 +1045,25 @@ async function startBot(botId: string) {
                                 mimetype: 'application/pdf', 
                                 fileName: 'documento.pdf',
                                 caption: 'Aqui está o seu PDF solicitado!'
+                            }, undefined, {
+                                actionName: 'AI_PDF_REPLY',
+                                chatType,
+                                messageId: msg.key?.id
                             });
                         } catch (pdfErr: any) {
                             console.error(`[Bot ${botId}] Erro ao gerar PDF:`, pdfErr);
-                            await safeSendMessage(botId, targetChatJid, { text: responseText });
+                            await safeSendMessage(botId, targetChatJid, { text: responseText }, undefined, {
+                                actionName: 'AI_REPLY',
+                                chatType,
+                                messageId: msg.key?.id
+                            });
                         }
                     } else {
-                        await safeSendMessage(botId, targetChatJid, { text: responseText });
+                        await safeSendMessage(botId, targetChatJid, { text: responseText }, undefined, {
+                            actionName: 'AI_REPLY',
+                            chatType,
+                            messageId: msg.key?.id
+                        });
                     }
 
                     if (isGroup) {
@@ -954,6 +1073,18 @@ async function startBot(botId: string) {
                             messageId: msg.key?.id
                         });
                     }
+                } else {
+                    console.error(`[Bot ${botId}] Gemini não retornou texto:`, geminiResult.error);
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'GEMINI_REQUEST_FAILED',
+                        result: 'ERROR',
+                        chatId: targetChatJid,
+                        remoteJid,
+                        senderJid,
+                        chatType,
+                        details: `IA não gerou resposta: ${geminiResult.error || 'Nenhum texto retornado'}`
+                    });
                 }
             } catch (e: any) {
                 console.error(`Erro no Bot ${botId} ao processar mensagem:`, e);

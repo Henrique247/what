@@ -1008,7 +1008,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                     chatId: replyDestination,
                     details: `Tentativa não autorizada de reivindicar propriedade: ${senderJid}`
                 });
-                await sendReply({ text: 'Não reconheço este número como proprietário autorizado.' });
+                await sendReply({ text: '⛔ *Acesso Negado*\nNão reconheço este número como proprietário autorizado.' });
             }
             return { handled: true };
         }
@@ -1039,7 +1039,7 @@ export async function handleWhatsAppAdminMessage(opts: {
                     chatId: replyDestination,
                     details: 'Consulta de proprietário negada a usuário não autorizado'
                 });
-                await sendReply({ text: 'Não posso revelar informações de propriedade deste bot.' });
+                await sendReply({ text: '⛔ *Acesso Negado*\nNão posso revelar informações de propriedade deste bot.' });
             }
             return { handled: true };
         }
