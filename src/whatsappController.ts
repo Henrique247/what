@@ -2,7 +2,7 @@ import { doc, updateDoc, setDoc, deleteDoc, collection, getDocs, getDoc, writeBa
 import { isPhoneMatch, normalizePhone, hasPermission, PERMISSIONS } from './security';
 import { recordAuditLog, fetchAuditLogs } from './audit';
 import { GoogleGenAI } from '@google/genai';
-import { getGroupConfig, getGroupMeta, recordGroupLog } from './services/groupModeration';
+import { getGroupConfig, getGroupMeta, recordGroupLog, isBotParticipantAdmin } from './services/groupModeration';
 import { scheduleGroupMotivation } from './services/groupScheduler';
 import { GroupConfig } from './types';
 
@@ -972,10 +972,107 @@ export async function handleWhatsAppAdminMessage(opts: {
         return { handled: true };
     }
 
-    if (cmd === '/grupos') {
-        await sock.sendMessage(senderJid, {
-            text: `👥 *RESPOSTAS EM GRUPOS*\n\nEstado atual: ${currentBot.respondInGroups ? '🟢 Ativas' : '🔴 Desativadas'}\n\nComandos:\n• */grupos on* — Ativa respostas em grupos\n• */grupos off* — Desativa respostas em grupos`
+    if (cmd.startsWith('/grupos admin')) {
+        let adminGroups: any[] = [];
+        try {
+            if (sock) {
+                const participating = await sock.groupFetchAllParticipating();
+                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
+                    const participants = gMeta.participants || [];
+                    const botIsAdmin = participants.some((p: any) => isBotParticipantAdmin(sock.user, p));
+                    if (botIsAdmin) {
+                        adminGroups.push({
+                            id: gId,
+                            subject: gMeta.subject || 'Grupo WhatsApp',
+                            participantsCount: participants.length
+                        });
+                    }
+                }
+            } else {
+                const savedSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
+                savedSnap.docs.forEach(docSnap => {
+                    const data = docSnap.data();
+                    if (data.botIsAdmin) {
+                        adminGroups.push({
+                            id: docSnap.id,
+                            subject: data.groupName || 'Grupo WhatsApp',
+                            participantsCount: data.participantCount || 0
+                        });
+                    }
+                });
+            }
+        } catch (err) {
+            console.error('[WhatsAppController] Erro ao buscar grupos admin:', err);
+        }
+
+        if (adminGroups.length === 0) {
+            await sock.sendMessage(senderJid, {
+                text: `👑 *GRUPOS ONDE SOU ADMIN*\n\nNenhum grupo encontrado onde este bot possui privilégios de Administrador.`
+            });
+            return { handled: true };
+        }
+
+        const parts = cleanText.split(/\s+/);
+        const page = parseInt(parts[2] || '1', 10) || 1;
+        const pageSize = 10;
+        const totalPages = Math.ceil(adminGroups.length / pageSize);
+        const currentPage = Math.min(Math.max(1, page), totalPages);
+        const pagedGroups = adminGroups.slice((currentPage - 1) * pageSize, currentPage * pageSize);
+
+        let msg = `👑 *GRUPOS ONDE SOU ADMIN* (${currentPage}/${totalPages})\n\n`;
+        pagedGroups.forEach((g, idx) => {
+            const num = (currentPage - 1) * pageSize + idx + 1;
+            msg += `${num}. *${g.subject}* (${g.participantsCount} membros)\n`;
         });
+
+        msg += `\nTotal: *${adminGroups.length}* grupo(s) como administrador.`;
+        if (totalPages > currentPage) {
+            msg += `\n\n_Para ver mais, digite: */grupos admin ${currentPage + 1}*_`;
+        }
+
+        await sock.sendMessage(senderJid, { text: msg });
+        return { handled: true };
+    }
+
+    if (cmd === '/grupos') {
+        let totalGroups = 0;
+        let adminCount = 0;
+        let memberCount = 0;
+
+        try {
+            if (sock) {
+                const participating = await sock.groupFetchAllParticipating();
+                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
+                    totalGroups++;
+                    const participants = gMeta.participants || [];
+                    const botIsAdmin = participants.some((p: any) => isBotParticipantAdmin(sock.user, p));
+                    if (botIsAdmin) adminCount++;
+                    else memberCount++;
+                }
+            } else {
+                const savedSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
+                savedSnap.docs.forEach(docSnap => {
+                    totalGroups++;
+                    if (docSnap.data().botIsAdmin) adminCount++;
+                    else memberCount++;
+                });
+            }
+        } catch (e) {}
+
+        const summaryMsg = `📊 *RESUMO DE GRUPOS*
+
+• Total de Grupos: *${totalGroups}*
+• Sou Admin: *${adminCount}* 👑
+• Sou Membro: *${memberCount}* 👤
+
+• Respostas em grupos: ${currentBot.respondInGroups ? '🟢 Ativas' : '🔴 Desativadas'}
+
+*Comandos:*
+• */grupos admin* — Listar grupos onde sou admin
+• */grupos on* — Ativar respostas em grupos
+• */grupos off* — Desativar respostas em grupos`;
+
+        await sock.sendMessage(senderJid, { text: summaryMsg });
         return { handled: true };
     }
 

@@ -253,13 +253,19 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
     setGroupFormData({ ...groupFormData, allowedLinks: current.filter(l => l !== link) });
   };
 
+  const [groupTabFilter, setGroupTabFilter] = useState<'ALL' | 'ADMIN' | 'MEMBER'>('ALL');
+
   // Filtered Groups
   const filteredGroups = groups.filter(g => {
     const matchesSearch = 
       g.groupName.toLowerCase().includes(searchTerm.toLowerCase()) || 
       g.groupId.toLowerCase().includes(searchTerm.toLowerCase());
-    const matchesAdmin = filterAdminOnly ? g.botIsAdmin : true;
-    return matchesSearch && matchesAdmin;
+    
+    let matchesTab = true;
+    if (groupTabFilter === 'ADMIN') matchesTab = g.botIsAdmin;
+    if (groupTabFilter === 'MEMBER') matchesTab = !g.botIsAdmin;
+
+    return matchesSearch && matchesTab;
   });
 
   return (
@@ -338,17 +344,41 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
           />
         </div>
 
-        <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+        {/* Tab Selection: Todos, Sou Admin, Sou Membro */}
+        <div className="flex items-center gap-1.5 p-1 bg-[#0F1318] border border-[#22282F] rounded-xl w-full sm:w-auto justify-start sm:justify-end">
           <button
-            onClick={() => setFilterAdminOnly(!filterAdminOnly)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-1.5 ${
-              filterAdminOnly 
-                ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' 
-                : 'bg-[#151A1F] text-zinc-400 border-[#22282F] hover:text-zinc-200'
+            onClick={() => setGroupTabFilter('ALL')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              groupTabFilter === 'ALL'
+                ? 'bg-[#1E252D] text-white shadow-sm font-semibold'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            Todos ({groups.length})
+          </button>
+
+          <button
+            onClick={() => setGroupTabFilter('ADMIN')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+              groupTabFilter === 'ADMIN'
+                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-semibold'
+                : 'text-zinc-400 hover:text-emerald-400'
             }`}
           >
             <Crown className="w-3.5 h-3.5" />
-            <span>Apenas Bot Admin</span>
+            <span>Sou Admin ({groups.filter(g => g.botIsAdmin).length})</span>
+          </button>
+
+          <button
+            onClick={() => setGroupTabFilter('MEMBER')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
+              groupTabFilter === 'MEMBER'
+                ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 font-semibold'
+                : 'text-zinc-400 hover:text-amber-400'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5" />
+            <span>Sou Membro ({groups.filter(g => !g.botIsAdmin).length})</span>
           </button>
         </div>
       </div>

@@ -262,6 +262,86 @@ const startingBots = new Set<string>();
 const botReconnectAttempts = new Map<string, number>();
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
 
+// Safe Message Sending Wrapper with Connection Verification and Audit Logging
+async function safeSendMessage(
+    botId: string, 
+    jid: string, 
+    content: any, 
+    options?: any
+): Promise<boolean> {
+    try {
+        const sock = activeSocks.get(botId);
+        const status = connectionStatuses.get(botId);
+
+        if (!sock || status !== 'Conectado') {
+            console.warn(`[Bot ${botId}] Envio bloqueado: Bot desconectado (${status || 'OFFLINE'}). JID: ${jid}`);
+            await recordAuditLog(firestoreDb, {
+                botId,
+                action: 'MESSAGE_SEND_FAILED',
+                result: 'ERROR',
+                chatId: jid,
+                details: `Bot não está conectado. Status atual: ${status || 'OFFLINE'}`
+            });
+            return false;
+        }
+
+        if (!jid || (!jid.endsWith('@s.whatsapp.net') && !jid.endsWith('@g.us'))) {
+            console.warn(`[Bot ${botId}] JID com formato inválido para envio: ${jid}`);
+            await recordAuditLog(firestoreDb, {
+                botId,
+                action: 'MESSAGE_SEND_FAILED',
+                result: 'ERROR',
+                chatId: jid,
+                details: `JID inválido: ${jid}`
+            });
+            return false;
+        }
+
+        await sock.sendMessage(jid, content, options);
+        return true;
+    } catch (err: any) {
+        console.error(`[Bot ${botId}] Erro ao enviar mensagem para ${jid}:`, err);
+        await recordAuditLog(firestoreDb, {
+            botId,
+            action: 'MESSAGE_SEND_ERROR',
+            result: 'ERROR',
+            chatId: jid,
+            details: err.message || 'Erro de envio via Baileys',
+            errorCode: err.code || 'SEND_ERROR',
+            errorMessage: err.message,
+            stack: err.stack
+        });
+        return false;
+    }
+}
+
+// Global Process Crash Prevention & Audit
+process.on('uncaughtException', (err) => {
+    console.error('[CRASH PREVENTION] Uncaught Exception:', err);
+    try {
+        recordAuditLog(firestoreDb, {
+            botId: 'system',
+            action: 'UNCAUGHT_EXCEPTION',
+            result: 'ERROR',
+            details: err.message || 'Exceção não tratada capturada',
+            stack: err.stack
+        });
+    } catch (e) {}
+});
+
+process.on('unhandledRejection', (reason: any) => {
+    console.error('[CRASH PREVENTION] Unhandled Rejection:', reason);
+    try {
+        recordAuditLog(firestoreDb, {
+            botId: 'system',
+            action: 'UNHANDLED_REJECTION',
+            result: 'ERROR',
+            details: typeof reason === 'object' ? (reason?.message || JSON.stringify(reason)) : String(reason),
+            stack: reason?.stack
+        });
+    } catch (e) {}
+});
+
 async function resetBotSession(botId: string) {
     console.log(`[Bot ${botId}] Resetando sessão WhatsApp e gerando novo QR...`);
     botReconnectAttempts.delete(botId);
@@ -542,197 +622,226 @@ async function startBot(botId: string) {
     });
 
     sock.ev.on('messages.upsert', async (m: any) => {
-        const msg = m.messages[0];
-        if (!msg.message || msg.key.fromMe) return;
+        if (!m.messages || !Array.isArray(m.messages)) return;
 
-        const jid = msg.key.remoteJid;
-        const isGroup = jid.endsWith('@g.us');
-        
-        const messageType = Object.keys(msg.message)[0];
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || "";
-        
-        // Reload bot config for each message to ensure latest settings
-        const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
-        const currentBot = botDoc.data();
-        if (!currentBot || !currentBot.active) return;
+        for (const msg of m.messages) {
+            try {
+                if (!msg || !msg.message) continue;
 
-        // Intercept administrative commands and owner management intents via WhatsApp
-        const adminResult = await handleWhatsAppAdminMessage({
-            sock,
-            botId,
-            currentBot,
-            senderJid: msg.key.participant || jid,
-            groupId: isGroup ? jid : undefined,
-            text,
-            messageObj: msg.message,
-            firestoreDb,
-            isGroup,
-            onResetBot: async (targetBotId: string) => {
-                await resetBotSession(targetBotId);
-            }
-        });
+                const jid = msg.key.remoteJid;
+                if (!jid) continue;
 
-        if (adminResult.handled) {
-            return;
-        }
+                const isGroup = jid.endsWith('@g.us');
+                const messageType = Object.keys(msg.message)[0];
+                const text = msg.message.conversation || msg.message.extendedTextMessage?.text || msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || "";
+                const cleanText = (text || '').trim();
 
-        // Executa Moderação Determinística em Grupos
-        if (isGroup) {
-            const senderJid = msg.key.participant || jid;
-            const modResult = await processGroupModeration({
-                sock,
-                botId,
-                currentBot,
-                groupId: jid,
-                senderJid,
-                messageKey: msg.key,
-                rawText: text,
-                messageObj: msg.message,
-                firestoreDb
-            });
+                // If message is fromMe (sent by bot or from phone app using bot number)
+                if (msg.key.fromMe) {
+                    if (cleanText.startsWith('/') || cleanText.startsWith('!')) {
+                        // Allow owner slash commands sent directly from WhatsApp on phone
+                    } else {
+                        // Ignore general self messages to prevent loops
+                        continue;
+                    }
+                }
 
-            if (modResult.blocked || !modResult.shouldProceedToAI) {
-                return;
-            }
-        }
+                // Reload bot config for each message
+                const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+                const currentBot = botDoc.data();
+                if (!currentBot || !currentBot.active) continue;
 
-        // Check for media
-        const isImage = messageType === 'imageMessage';
-        const isDocument = messageType === 'documentMessage';
-        const isPdf = isDocument && msg.message.documentMessage.mimetype === 'application/pdf';
-
-        if ((isImage || isPdf) && !currentBot.analysisEnabled) return;
-        if (!text && !isImage && !isPdf) return;
-
-        // Check if bot should respond in this context
-        if (isGroup && !currentBot.respondInGroups) return;
-        if (!isGroup && !currentBot.respondInPrivate) return;
-
-        // Handle private exit command
-        if (!isGroup && text.toLowerCase() === '!sair' && currentBot.privateExitEnabled) {
-            await sock.sendMessage(jid, { text: currentBot.exitMsg || "Até logo!" });
-            return;
-        }
-
-        const genAIs = getGenAIInstances(currentBot.geminiKeys || "");
-        if (genAIs.length === 0) {
-            console.warn(`[Bot ${botId}] Nenhuma chave de API Gemini configurada (geminiKeys e GEMINI_API_KEY estão vazios). O bot não pode responder.`);
-            return;
-        }
-
-        try {
-            const history = currentBot.memoryEnabled ? await getHistory(botId, jid) : [];
-            
-            // Handle private welcome message (first contact)
-            if (!isGroup && history.length === 0 && currentBot.privateWelcomeEnabled) {
-                await sock.sendMessage(jid, { text: currentBot.welcomeMsg || "Olá! Como posso ajudar?" });
-                // Don't return, let Gemini process the first message too
-            }
-
-            const parts: any[] = [];
-            if (text) parts.push({ text });
-
-            if ((isImage || isPdf) && currentBot.analysisEnabled) {
-                console.log(`[Bot ${botId}] Baixando mídia para análise...`);
-                const buffer = await downloadMediaMessage(msg, 'buffer', {});
-                const mimeType = isImage ? 'image/jpeg' : 'application/pdf';
-                parts.push({
-                    inlineData: {
-                        data: buffer.toString('base64'),
-                        mimeType
+                // Intercept administrative commands and owner management intents via WhatsApp
+                const adminResult = await handleWhatsAppAdminMessage({
+                    sock,
+                    botId,
+                    currentBot,
+                    senderJid: msg.key.participant || jid,
+                    groupId: isGroup ? jid : undefined,
+                    text: cleanText,
+                    messageObj: msg.message,
+                    firestoreDb,
+                    isGroup,
+                    onResetBot: async (targetBotId: string) => {
+                        await resetBotSession(targetBotId);
                     }
                 });
-                if (currentBot.analysisInstructions) {
-                    parts.push({ text: `\n\nINSTRUÇÕES DE ANÁLISE:\n${currentBot.analysisInstructions}` });
+
+                if (adminResult.handled) {
+                    continue;
                 }
-            }
 
-            await saveMessage(botId, jid, 'user', text || "[Mídia enviada]");
+                // Executa Moderação Determinística em Grupos
+                if (isGroup) {
+                    const senderJid = msg.key.participant || jid;
+                    const modResult = await processGroupModeration({
+                        sock,
+                        botId,
+                        currentBot,
+                        groupId: jid,
+                        senderJid,
+                        messageKey: msg.key,
+                        rawText: text,
+                        messageObj: msg.message,
+                        firestoreDb
+                    });
 
-            const isOwner = currentBot.ownerNumber && jid.includes(currentBot.ownerNumber);
-            let ownerInstruction = "";
-            if (isOwner) {
-                ownerInstruction = `\n\nVOCÊ ESTÁ FALANDO COM SEU PROPRIETÁRIO: ${currentBot.ownerName}. Ele tem permissão total. Se ele pedir relatórios, resumos ou informações sobre o sistema, forneça-os de forma clara e detalhada.`;
-            }
+                    if (modResult.blocked || !modResult.shouldProceedToAI) {
+                        continue;
+                    }
+                }
 
-            const pdfInstruction = "\n\nSe o usuário solicitar um PDF ou se você achar que a resposta deve ser um documento formal, escreva o conteúdo que deve ir no PDF entre as tags <pdf> e </pdf>. O sistema converterá automaticamente esse conteúdo em um arquivo PDF e enviará ao usuário.";
-            const fullSystemPrompt = `${currentBot.systemPrompt}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
-            
-            // Retry logic with rotation
-            let attempts = 0;
-            const maxAttempts = genAIs.length * 2;
-            let response;
-            let keyIndex = currentKeyIndexes.get(botId) || 0;
+                // Detect mentions and replies to the bot
+                const botPhone = sock.user?.id ? normalizePhone(sock.user.id) : '';
+                const contextInfo = msg.message.extendedTextMessage?.contextInfo || msg.message.imageMessage?.contextInfo || msg.message.documentMessage?.contextInfo;
+                const isMentioned = contextInfo?.mentionedJid?.some((mJid: string) => isPhoneMatch(normalizePhone(mJid), botPhone)) || (text && botPhone && text.includes(botPhone));
+                const isReplyToBot = contextInfo?.participant && isPhoneMatch(normalizePhone(contextInfo.participant), botPhone);
 
-            while (attempts < maxAttempts) {
-                try {
-                    const currentAI = genAIs[keyIndex % genAIs.length];
+                // Check for media
+                const isImage = messageType === 'imageMessage';
+                const isDocument = messageType === 'documentMessage';
+                const isPdf = isDocument && msg.message.documentMessage?.mimetype === 'application/pdf';
+
+                if ((isImage || isPdf) && !currentBot.analysisEnabled) continue;
+                if (!cleanText && !isImage && !isPdf) continue;
+
+                // Check if bot should respond in this context
+                if (isGroup && !currentBot.respondInGroups && !isMentioned && !isReplyToBot) continue;
+                if (!isGroup && !currentBot.respondInPrivate) continue;
+
+                // Handle private exit command
+                if (!isGroup && cleanText.toLowerCase() === '!sair' && currentBot.privateExitEnabled) {
+                    await safeSendMessage(botId, jid, { text: currentBot.exitMsg || "Até logo!" });
+                    continue;
+                }
+
+                const genAIs = getGenAIInstances(currentBot.geminiKeys || "");
+                if (genAIs.length === 0) {
+                    console.warn(`[Bot ${botId}] Nenhuma chave Gemini configurada. Atendimento AI suspenso.`);
+                    await recordAuditLog(firestoreDb, {
+                        botId,
+                        action: 'AI_UNAVAILABLE',
+                        result: 'ERROR',
+                        details: 'Nenhuma chave Gemini disponível'
+                    });
+                    continue;
+                }
+
+                const history = currentBot.memoryEnabled ? await getHistory(botId, jid) : [];
+                
+                // Handle private welcome message (first contact)
+                if (!isGroup && history.length === 0 && currentBot.privateWelcomeEnabled) {
+                    await safeSendMessage(botId, jid, { text: currentBot.welcomeMsg || "Olá! Como posso ajudar?" });
+                }
+
+                const parts: any[] = [];
+                if (cleanText) parts.push({ text: cleanText });
+
+                if ((isImage || isPdf) && currentBot.analysisEnabled) {
+                    console.log(`[Bot ${botId}] Baixando mídia para análise...`);
+                    const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                    const mimeType = isImage ? 'image/jpeg' : 'application/pdf';
+                    parts.push({
+                        inlineData: {
+                            data: buffer.toString('base64'),
+                            mimeType
+                        }
+                    });
+                    if (currentBot.analysisInstructions) {
+                        parts.push({ text: `\n\nINSTRUÇÕES DE ANÁLISE:\n${currentBot.analysisInstructions}` });
+                    }
+                }
+
+                await saveMessage(botId, jid, 'user', cleanText || "[Mídia enviada]");
+
+                const isOwner = currentBot.ownerNumber && jid.includes(currentBot.ownerNumber);
+                let ownerInstruction = "";
+                if (isOwner) {
+                    ownerInstruction = `\n\nVOCÊ ESTÁ FALANDO COM SEU PROPRIETÁRIO: ${currentBot.ownerName || 'Proprietário'}. Ele tem permissão total. Se ele pedir relatórios, resumos ou informações sobre o sistema, forneça-os de forma clara e detalhada.`;
+                }
+
+                const pdfInstruction = "\n\nSe o usuário solicitar um PDF ou se você achar que a resposta deve ser um documento formal, escreva o conteúdo que deve ir no PDF entre as tags <pdf> e </pdf>. O sistema converterá automaticamente esse conteúdo em um arquivo PDF e enviará ao usuário.";
+                const fullSystemPrompt = `${currentBot.systemPrompt || ''}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
+                
+                // Retry logic with rotation
+                let attempts = 0;
+                const maxAttempts = genAIs.length * 2;
+                let response;
+                let keyIndex = currentKeyIndexes.get(botId) || 0;
+
+                while (attempts < maxAttempts) {
                     try {
-                        response = await currentAI.models.generateContent({
-                            model: "gemini-2.5-flash",
-                            contents: [...history, { role: 'user', parts }],
-                            config: { systemInstruction: fullSystemPrompt }
-                        });
-                    } catch (modelErr: any) {
-                        if (modelErr.message?.includes("not found") || modelErr.message?.includes("404")) {
+                        const currentAI = genAIs[keyIndex % genAIs.length];
+                        try {
                             response = await currentAI.models.generateContent({
-                                model: "gemini-1.5-flash",
+                                model: "gemini-2.5-flash",
                                 contents: [...history, { role: 'user', parts }],
                                 config: { systemInstruction: fullSystemPrompt }
                             });
-                        } else {
-                            throw modelErr;
+                        } catch (modelErr: any) {
+                            if (modelErr.message?.includes("not found") || modelErr.message?.includes("404")) {
+                                response = await currentAI.models.generateContent({
+                                    model: "gemini-1.5-flash",
+                                    contents: [...history, { role: 'user', parts }],
+                                    config: { systemInstruction: fullSystemPrompt }
+                                });
+                            } else {
+                                throw modelErr;
+                            }
                         }
+                        currentKeyIndexes.set(botId, keyIndex % genAIs.length);
+                        break;
+                    } catch (err: any) {
+                        attempts++;
+                        const is429 = err.message?.includes("429") || err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
+                        if (is429) {
+                            keyIndex++;
+                            continue;
+                        }
+                        throw err;
                     }
-                    currentKeyIndexes.set(botId, keyIndex % genAIs.length);
-                    break;
-                } catch (err: any) {
-                    attempts++;
-                    const is429 = err.message?.includes("429") || err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
-                    if (is429) {
-                        keyIndex++;
-                        continue;
-                    }
-                    throw err;
                 }
-            }
 
-            const responseText = response?.text;
-            if (responseText) {
-                await saveMessage(botId, jid, 'model', responseText);
-                
-                // Check for PDF tags
-                const pdfMatch = responseText.match(/<pdf>([\s\S]*?)<\/pdf>/i);
-                
-                if (pdfMatch) {
-                    try {
-                        const pdfContent = pdfMatch[1].trim();
-                        const pdfBuffer = await createPDF(pdfContent);
-                        
-                        // Remove tags from text response if we want to send text too, 
-                        // or just send the PDF. Let's send both if there's text outside tags.
-                        const cleanText = responseText.replace(/<pdf>[\s\S]*?<\/pdf>/gi, '').trim();
-                        
-                        if (cleanText) {
-                            await sock.sendMessage(jid, { text: cleanText });
+                const responseText = response?.text;
+                if (responseText) {
+                    await saveMessage(botId, jid, 'model', responseText);
+                    
+                    const pdfMatch = responseText.match(/<pdf>([\s\S]*?)<\/pdf>/i);
+                    
+                    if (pdfMatch) {
+                        try {
+                            const pdfContent = pdfMatch[1].trim();
+                            const pdfBuffer = await createPDF(pdfContent);
+                            const cleanTextOutsidePdf = responseText.replace(/<pdf>[\s\S]*?<\/pdf>/gi, '').trim();
+                            
+                            if (cleanTextOutsidePdf) {
+                                await safeSendMessage(botId, jid, { text: cleanTextOutsidePdf });
+                            }
+                            
+                            await safeSendMessage(botId, jid, { 
+                                document: pdfBuffer, 
+                                mimetype: 'application/pdf', 
+                                fileName: 'documento.pdf',
+                                caption: 'Aqui está o seu PDF solicitado!'
+                            });
+                        } catch (pdfErr: any) {
+                            console.error(`[Bot ${botId}] Erro ao gerar PDF:`, pdfErr);
+                            await safeSendMessage(botId, jid, { text: responseText });
                         }
-                        
-                        await sock.sendMessage(jid, { 
-                            document: pdfBuffer, 
-                            mimetype: 'application/pdf', 
-                            fileName: 'documento.pdf',
-                            caption: 'Aqui está o seu PDF solicitado!'
-                        });
-                    } catch (pdfErr) {
-                        console.error(`[Bot ${botId}] Erro ao gerar PDF:`, pdfErr);
-                        await sock.sendMessage(jid, { text: responseText });
+                    } else {
+                        await safeSendMessage(botId, jid, { text: responseText });
                     }
-                } else {
-                    await sock.sendMessage(jid, { text: responseText });
                 }
+            } catch (e: any) {
+                console.error(`Erro no Bot ${botId} ao processar mensagem:`, e);
+                await recordAuditLog(firestoreDb, {
+                    botId,
+                    action: 'MESSAGE_PROCESSING_ERROR',
+                    result: 'ERROR',
+                    details: e.message || 'Erro ao processar mensagem recebida',
+                    stack: e.stack
+                });
             }
-        } catch (e) {
-            console.error(`Erro no Bot ${botId}:`, e);
         }
     });
     } catch (e) {
@@ -1477,29 +1586,196 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
 
         await updateDoc(botRef, updatePayload);
 
+        // Read-back verification to guarantee persistence in Firestore
+        const verifySnap = await getDoc(botRef);
+        if (!verifySnap.exists()) {
+            throw new Error("Falha na verificação de persistência: documento do bot não encontrado no Firestore após gravação.");
+        }
+        const savedBotData = verifySnap.data();
+
         await recordAuditLog(firestoreDb, {
             botId: req.params.id,
             role: authRole,
+            actorRole: authRole,
             action: 'CONFIG_UPDATED',
             result: 'SUCCESS',
-            details: 'Configurações do bot atualizadas com sucesso via Web'
+            details: 'Configurações do bot atualizadas, confirmadas e persistidas no Firestore',
+            fieldsChanged: Object.keys(updatePayload),
+            oldValue: currentBot,
+            newValue: savedBotData
         });
 
-        res.send({ status: "Configuração salva!" });
-    } catch (e) {
+        res.send({ status: "Configuração salva e confirmada no Firestore!", config: savedBotData });
+    } catch (e: any) {
         console.error("Erro ao salvar config:", e);
-        res.status(500).send({ error: "Erro ao salvar config" });
+        await recordAuditLog(firestoreDb, {
+            botId: req.params.id,
+            action: 'CONFIG_UPDATE_FAILED',
+            result: 'ERROR',
+            details: 'Erro ao salvar configurações do bot',
+            errorMessage: e.message,
+            stack: e.stack
+        });
+        res.status(500).send({ error: "Erro ao salvar config: " + e.message });
     }
 });
 
-// Audit Logs Endpoint
+// Audit Logs Endpoint for Bot
 app.get('/api/bot/:id/audit-logs', requireBotAuth, async (req, res) => {
     try {
-        const logs = await fetchAuditLogs(firestoreDb, req.params.id, 30);
+        const limitCount = parseInt((req.query.limit as string) || '50', 10);
+        const type = req.query.type as string;
+        const actor = req.query.actor as string;
+        const action = req.query.action as string;
+        const search = req.query.search as string;
+
+        const logs = await fetchAuditLogs(firestoreDb, req.params.id, limitCount, {
+            type,
+            actor,
+            action,
+            search
+        });
         res.send(logs);
     } catch (e: any) {
         console.error("Erro ao buscar logs de auditoria:", e);
-        res.status(500).send({ error: "Erro ao buscar logs" });
+        res.status(500).send({ error: "Erro ao buscar logs de auditoria" });
+    }
+});
+
+// Admin Global Audit Logs Endpoint
+app.get('/api/admin/audit-logs', async (req, res) => {
+    try {
+        const adminKey = req.headers['x-admin-key'] as string;
+        const isAdmin = adminKey === (process.env.ADMIN_KEY || 'techstar_master_2024') || 
+                        req.headers['x-requested-by'] === 'techstar-admin';
+
+        if (!isAdmin) {
+            return res.status(403).json({ error: 'Acesso restrito ao Administrador Global' });
+        }
+
+        const targetBotId = (req.query.botId as string) || 'all';
+        const limitCount = parseInt((req.query.limit as string) || '100', 10);
+        const type = req.query.type as string;
+        const actor = req.query.actor as string;
+        const action = req.query.action as string;
+        const search = req.query.search as string;
+
+        let allLogs: any[] = [];
+        if (targetBotId && targetBotId !== 'all') {
+            allLogs = await fetchAuditLogs(firestoreDb, targetBotId, limitCount, { type, actor, action, search });
+        } else {
+            const botsSnap = await getDocs(collection(firestoreDb, 'bots'));
+            for (const bDoc of botsSnap.docs) {
+                const bLogs = await fetchAuditLogs(firestoreDb, bDoc.id, 20, { type, actor, action, search });
+                allLogs.push(...bLogs);
+            }
+            allLogs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            allLogs = allLogs.slice(0, limitCount);
+        }
+
+        res.json(allLogs);
+    } catch (e: any) {
+        console.error("Erro ao buscar logs globais de auditoria:", e);
+        res.status(500).json({ error: "Erro ao buscar logs de auditoria: " + e.message });
+    }
+});
+
+// Dedicated Endpoint: Grupos onde o Bot é Administrador
+app.get('/api/bot/:id/admin-groups', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.GROUP_MANAGE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para visualizar grupos do bot.' });
+        }
+
+        const sock = activeSocks.get(botId);
+        const adminGroups: any[] = [];
+
+        if (sock && connectionStatuses.get(botId) === 'Conectado') {
+            try {
+                const participating = await sock.groupFetchAllParticipating();
+
+                for (const [gId, gMeta] of Object.entries(participating as Record<string, any>)) {
+                    const participants = gMeta.participants || [];
+                    let botIsAdmin = false;
+                    let botRole: 'admin' | 'superadmin' | 'member' = 'member';
+
+                    for (const p of participants) {
+                        if (isBotParticipantAdmin(sock.user, p)) {
+                            botIsAdmin = true;
+                            botRole = p.admin === 'superadmin' ? 'superadmin' : 'admin';
+                            break;
+                        }
+                    }
+
+                    if (botIsAdmin) {
+                        const groupRef = doc(firestoreDb, 'bots', botId, 'groups', gId);
+                        await setDoc(groupRef, {
+                            botId,
+                            groupId: gId,
+                            groupName: gMeta.subject || 'Grupo WhatsApp',
+                            groupDesc: gMeta.desc?.toString() || '',
+                            participantCount: participants.length,
+                            botIsAdmin: true,
+                            botRole,
+                            updatedAt: serverTimestamp()
+                        }, { merge: true });
+
+                        const config = await getGroupConfig(firestoreDb, botId, gId, gMeta.subject);
+                        config.botIsAdmin = true;
+                        config.participantCount = participants.length;
+
+                        adminGroups.push({
+                            groupId: gId,
+                            groupName: gMeta.subject || config.groupName || 'Grupo WhatsApp',
+                            groupDesc: gMeta.desc?.toString() || config.groupDesc || '',
+                            participantCount: participants.length,
+                            botIsAdmin: true,
+                            botRole,
+                            canDeleteMessages: true,
+                            canKickParticipants: true,
+                            canEditGroupInfo: true,
+                            lastSyncedAt: new Date().toISOString(),
+                            config
+                        });
+                    }
+                }
+            } catch (sockErr: any) {
+                console.warn(`[Bot ${botId}] Erro ao consultar grupos via Baileys:`, sockErr);
+            }
+        }
+
+        // Fallback: Check Firestore persisted admin groups if offline or empty live list
+        if (adminGroups.length === 0) {
+            const savedGroupsSnap = await getDocs(collection(firestoreDb, 'bots', botId, 'groups'));
+            for (const docSnap of savedGroupsSnap.docs) {
+                const data = docSnap.data();
+                if (data.botIsAdmin) {
+                    const config = await getGroupConfig(firestoreDb, botId, docSnap.id, data.groupName);
+                    adminGroups.push({
+                        groupId: docSnap.id,
+                        groupName: data.groupName || 'Grupo WhatsApp',
+                        groupDesc: data.groupDesc || '',
+                        participantCount: data.participantCount || 0,
+                        botIsAdmin: true,
+                        botRole: data.botRole || 'admin',
+                        canDeleteMessages: true,
+                        canKickParticipants: true,
+                        canEditGroupInfo: true,
+                        lastSyncedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : new Date().toISOString(),
+                        config
+                    });
+                }
+            }
+        }
+
+        res.json(adminGroups);
+    } catch (err: any) {
+        console.error(`Erro ao obter grupos admin do bot ${req.params.id}:`, err);
+        res.status(500).json({ error: "Erro ao obter grupos admin: " + err.message });
     }
 });
 

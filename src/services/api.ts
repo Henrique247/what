@@ -173,6 +173,30 @@ class ApiService {
     return res.json();
   }
 
+  async getBotAdminGroups(botId: string, token?: string, isAdmin: boolean = true): Promise<Array<{
+    groupId: string;
+    groupName: string;
+    groupDesc?: string;
+    participantCount: number;
+    botIsAdmin: boolean;
+    botRole: 'admin' | 'superadmin' | 'member';
+    canDeleteMessages: boolean;
+    canKickParticipants: boolean;
+    canEditGroupInfo: boolean;
+    lastSyncedAt?: string;
+    config: GroupConfig;
+  }>> {
+    const url = token ? `/api/bot/${botId}/admin-groups?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/admin-groups`;
+    const res = await fetch(url, {
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao listar grupos onde o bot é admin');
+    }
+    return res.json();
+  }
+
   async getGroupDetails(botId: string, groupId: string, token?: string, isAdmin: boolean = true): Promise<{
     groupId: string;
     groupName: string;
