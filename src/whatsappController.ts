@@ -1,7 +1,18 @@
 import { doc, updateDoc, setDoc, deleteDoc, collection, getDocs, getDoc, writeBatch, Firestore, query, orderBy, limit } from 'firebase/firestore';
-import { isPhoneMatch, normalizePhone, hasPermission, PERMISSIONS, ALL_PERMISSIONS } from './security';
+import { 
+    isPhoneMatch, 
+    normalizePhone, 
+    classifyJid, 
+    normalizeLid, 
+    resolveOwnerIdentity, 
+    OwnerIdentity, 
+    JidType, 
+    hasPermission, 
+    PERMISSIONS, 
+    ALL_PERMISSIONS 
+} from './security';
 import { recordAuditLog, fetchAuditLogs } from './audit';
-import { GoogleGenAI } from '@google/genai';
+import { generateGeminiContent } from './services/geminiService';
 import { getGroupConfig, getGroupMeta, recordGroupLog, isBotParticipantAdmin } from './services/groupModeration';
 import { scheduleGroupMotivation } from './services/groupScheduler';
 import { GroupConfig } from './types';
@@ -20,7 +31,12 @@ export const ownerModeSessions = new Map<string, boolean>();
 export const pendingConfirmations = new Map<string, PendingConfirmation>();
 
 export function getSessionKey(botId: string, senderJid: string): string {
-    return `${botId}:${normalizePhone(senderJid)}`;
+    const jidType = classifyJid(senderJid);
+    if (jidType === 'LID') {
+        return `${botId}:lid:${senderJid.trim().toLowerCase()}`;
+    }
+    const phone = normalizePhone(senderJid);
+    return `${botId}:pn:${phone || senderJid.trim().toLowerCase()}`;
 }
 
 /**
@@ -137,7 +153,6 @@ export async function parseOwnerIntent(
     // 2. Fallback to Gemini NLU if keys are provided and text is conversational
     if (geminiKey && clean.length > 5 && !clean.startsWith('/')) {
         try {
-            const ai = new GoogleGenAI({ apiKey: geminiKey });
             const prompt = `Analise a mensagem em português e extraia a intenção administrativa se for um comando de configuração do bot de WhatsApp.
 Retorne EXCLUSIVAMENTE um JSON no seguinte formato:
 {"intent": "NOME_DA_INTENCAO", "value": "valor ou booleano"}
@@ -163,16 +178,18 @@ Se não corresponder a nenhuma intenção administrativa acima, retorne:
 
 Mensagem a analisar: "${clean}"`;
 
-            const resp = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: prompt,
-                config: { responseMimeType: 'application/json' }
+            const gemResult = await generateGeminiContent({
+                botId: 'system_intent_parser',
+                keys: [geminiKey],
+                prompt,
+                responseMimeType: 'application/json'
             });
 
-            const textResp = resp.text?.trim() || '{}';
-            const parsed = JSON.parse(textResp);
-            if (parsed && parsed.intent && parsed.intent !== 'UNKNOWN') {
-                return parsed;
+            if (gemResult.success && gemResult.text) {
+                const parsed = JSON.parse(gemResult.text.trim());
+                if (parsed && parsed.intent && parsed.intent !== 'UNKNOWN') {
+                    return parsed;
+                }
             }
         } catch {
             // Silently fall back if Gemini parsing fails
@@ -561,6 +578,11 @@ _Nota: Administradores e o proprietário possuem imunidade automática._`;
 export interface OwnerAuthCheckResult {
     isOwner: boolean;
     reason: string;
+    senderJid: string;
+    senderType: JidType;
+    ownerLid?: string;
+    ownerPn?: string;
+    matchedIdentity: 'fromMe' | 'ownerLid' | 'ownerPhone' | 'ownerJid' | 'lidMapping' | 'none';
     configuredOwner: string;
     normalizedSender: string;
     normalizedOwner: string;
@@ -579,55 +601,49 @@ export async function checkBotOwnerAuthorization(params: {
 }): Promise<OwnerAuthCheckResult> {
     const { botId, currentBot, senderJid, senderPn, senderLid, fromMe, sock, firestoreDb } = params;
 
+    const ownerIdentity = resolveOwnerIdentity(currentBot);
+    const senderType = classifyJid(senderJid);
     const configuredOwner = String(currentBot?.ownerPhone || currentBot?.ownerNumber || currentBot?.ownerJid || currentBot?.ownerLid || '').trim();
-    const configuredOwnerJid = String(currentBot?.ownerJid || '').trim();
-    const configuredOwnerLid = String(currentBot?.ownerLid || '').trim();
-    const normalizedSender = normalizePhone(senderPn || senderJid);
-    const normalizedOwner = normalizePhone(configuredOwner);
+    const normalizedSender = senderType === 'PRIVATE_PN' ? normalizePhone(senderPn || senderJid) : '';
+    const normalizedOwner = ownerIdentity.phone || '';
     const ownerPermissions = Array.isArray(currentBot?.ownerPermissions) ? currentBot.ownerPermissions : (ALL_PERMISSIONS as unknown as string[]);
 
     let isOwner = false;
     let reason = 'Remetente não corresponde ao proprietário configurado';
+    let matchedIdentity: 'fromMe' | 'ownerLid' | 'ownerPhone' | 'ownerJid' | 'lidMapping' | 'none' = 'none';
 
     // 1. Dispositivo autenticado do bot (fromMe)
     if (fromMe) {
         isOwner = true;
+        matchedIdentity = 'fromMe';
         reason = 'Dispositivo autenticado do bot (fromMe)';
     }
-    // 2. Correspondência direta de JID configurado
-    else if (configuredOwnerJid && (senderJid === configuredOwnerJid || senderJid.split('@')[0] === configuredOwnerJid.split('@')[0])) {
-        isOwner = true;
-        reason = 'JID do remetente corresponde ao ownerJid configurado';
-    }
-    // 3. Correspondência direta de LID configurado
-    else if (configuredOwnerLid && (
-        senderJid === configuredOwnerLid ||
-        senderLid === configuredOwnerLid ||
-        senderJid.split('@')[0] === configuredOwnerLid.split('@')[0]
-    )) {
-        isOwner = true;
-        reason = 'LID do remetente corresponde ao ownerLid configurado';
-    }
-    // 4. Correspondência de número de telefone normalizado
-    else if (normalizedSender && normalizedOwner && isPhoneMatch(normalizedSender, normalizedOwner)) {
-        isOwner = true;
-        reason = 'Telefone do remetente corresponde ao ownerPhone configurado';
-    }
-    // 5. Tratamento de LID (@lid) via Baileys Signal Repository / USync ou fallback seguro
-    else if (senderJid.endsWith('@lid')) {
-        try {
-            if (sock?.signalRepository?.lidMapping?.getPNForLID) {
-                const pnJid = sock.signalRepository.lidMapping.getPNForLID(senderJid);
+    // 2. Correspondência direta de LID
+    else if (senderType === 'LID' || senderLid) {
+        const checkLid = (senderType === 'LID' ? senderJid : senderLid) || '';
+        if (ownerIdentity.lid && (
+            checkLid === ownerIdentity.lid ||
+            checkLid.split('@')[0] === ownerIdentity.lid.split('@')[0]
+        )) {
+            isOwner = true;
+            matchedIdentity = 'ownerLid';
+            reason = 'LID do remetente corresponde ao ownerLid configurado';
+        }
+        // Consulta no repositório de sinal do Baileys para verificar se o LID pertence ao PN do proprietário
+        else if (sock?.signalRepository?.lidMapping?.getPNForLID && normalizedOwner) {
+            try {
+                const pnJid = sock.signalRepository.lidMapping.getPNForLID(checkLid);
                 if (pnJid) {
                     const normPn = normalizePhone(pnJid);
                     if (isPhoneMatch(normPn, normalizedOwner)) {
                         isOwner = true;
+                        matchedIdentity = 'lidMapping';
                         reason = 'LID mapeado para o telefone do proprietário via Baileys lidMapping';
-                        updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: senderJid }).catch(() => {});
+                        updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: checkLid }).catch(() => {});
                     }
                 }
-            }
-        } catch {}
+            } catch {}
+        }
 
         if (!isOwner && sock?.signalRepository?.lidMapping?.getLIDForPN && normalizedOwner) {
             try {
@@ -637,39 +653,66 @@ export async function checkBotOwnerAuthorization(params: {
                 ];
                 for (const candidate of candidates) {
                     const resolvedLid = await sock.signalRepository.lidMapping.getLIDForPN(candidate);
-                    if (resolvedLid && (resolvedLid === senderJid || resolvedLid.split('@')[0] === senderJid.split('@')[0])) {
+                    if (resolvedLid && (resolvedLid === checkLid || resolvedLid.split('@')[0] === checkLid.split('@')[0])) {
                         isOwner = true;
+                        matchedIdentity = 'lidMapping';
                         reason = 'LID confirmado via Baileys USync para o telefone do proprietário';
-                        updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: senderJid }).catch(() => {});
+                        updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: checkLid }).catch(() => {});
                         break;
                     }
                 }
             } catch {}
         }
 
-        if (!isOwner && (senderJid === '29596971991096@lid' || senderLid === '29596971991096@lid') && (normalizedOwner.endsWith('942272074') || String(currentBot?.ownerName || '').toLowerCase().includes('mendes'))) {
+        // Reconhecimento de LID verificado para Mendes
+        if (!isOwner && (checkLid === '29596971991096@lid' || senderLid === '29596971991096@lid') && (normalizedOwner.endsWith('942272074') || String(currentBot?.ownerName || '').toLowerCase().includes('mendes'))) {
             isOwner = true;
+            matchedIdentity = 'ownerLid';
             reason = 'LID verificado para o proprietário Mendes';
-            updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: senderJid }).catch(() => {});
+            updateDoc(doc(firestoreDb, 'bots', botId), { ownerLid: checkLid }).catch(() => {});
         }
     }
+    // 3. Correspondência de PN / Telefone
+    else if (senderType === 'PRIVATE_PN') {
+        if (ownerIdentity.jid && (senderJid === ownerIdentity.jid || senderJid.split('@')[0] === ownerIdentity.jid.split('@')[0])) {
+            isOwner = true;
+            matchedIdentity = 'ownerJid';
+            reason = 'JID do remetente corresponde ao ownerJid configurado';
+        } else if (normalizedSender && normalizedOwner && isPhoneMatch(normalizedSender, normalizedOwner)) {
+            isOwner = true;
+            matchedIdentity = 'ownerPhone';
+            reason = 'Telefone do remetente corresponde ao ownerPhone configurado';
+        }
+    }
+
+    // Structured console output
+    console.log('[OWNER_AUTH_CHECK]', {
+        botId,
+        senderJid,
+        senderType,
+        ownerLid: ownerIdentity.lid || null,
+        ownerPn: ownerIdentity.pn || null,
+        matchedIdentity,
+        isOwner,
+        reason
+    });
 
     // Diagnóstico seguro: OWNER_AUTH_CHECK (SEM dados sensíveis)
     await recordAuditLog(firestoreDb, {
         botId,
         actorId: senderJid,
-        actorPhone: normalizedSender,
+        actorPhone: normalizedSender || undefined,
         actorRole: isOwner ? 'OWNER' : 'USER',
         action: 'OWNER_AUTH_CHECK',
         result: isOwner ? 'SUCCESS' : 'DENIED',
         senderJid,
         actorJid: senderJid,
         details: JSON.stringify({
-            botId,
             senderJid,
-            configuredOwner,
-            normalizedSender,
-            normalizedOwner,
+            senderType,
+            ownerLid: ownerIdentity.lid || null,
+            ownerPn: ownerIdentity.pn || null,
+            matchedIdentity,
             isOwner,
             reason
         })
@@ -678,6 +721,11 @@ export async function checkBotOwnerAuthorization(params: {
     return {
         isOwner,
         reason,
+        senderJid,
+        senderType,
+        ownerLid: ownerIdentity.lid,
+        ownerPn: ownerIdentity.pn,
+        matchedIdentity,
         configuredOwner,
         normalizedSender,
         normalizedOwner,

@@ -9,6 +9,7 @@ const DisconnectReason = (baileysLib as any).DisconnectReason || (baileysLib as 
 const fetchLatestBaileysVersion = (baileysLib as any).fetchLatestBaileysVersion || (baileysLib as any).default?.fetchLatestBaileysVersion;
 const downloadMediaMessage = (baileysLib as any).downloadMediaMessage || (baileysLib as any).default?.downloadMediaMessage;
 import { GoogleGenAI } from "@google/genai";
+import { generateGeminiContent } from './src/services/geminiService';
 import fs from 'fs';
 import qrcode from 'qrcode';
 import pino from 'pino';
@@ -814,8 +815,8 @@ async function startBot(botId: string) {
                     });
                 }
 
-                const genAIs = getGenAIInstances(currentBot.geminiKeys || "");
-                if (genAIs.length === 0) {
+                const geminiKeysConfig = currentBot.geminiKeys || currentBot.geminiKey || process.env.GEMINI_API_KEY || "";
+                if (!geminiKeysConfig.trim()) {
                     console.warn(`[Bot ${botId}] Nenhuma chave Gemini configurada. Atendimento AI suspenso.`);
                     await recordAuditLog(firestoreDb, {
                         botId,
@@ -906,46 +907,17 @@ async function startBot(botId: string) {
                 const pdfInstruction = "\n\nSe o usuário solicitar um PDF ou se você achar que a resposta deve ser um documento formal, escreva o conteúdo que deve ir no PDF entre as tags <pdf> e </pdf>. O sistema converterá automaticamente esse conteúdo em um arquivo PDF e enviará ao usuário.";
                 const fullSystemPrompt = `${currentBot.systemPrompt || ''}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
                 
-                // Retry logic with rotation
-                let attempts = 0;
-                const maxAttempts = genAIs.length * 2;
-                let response;
-                let keyIndex = currentKeyIndexes.get(botId) || 0;
+                // Centralized and resilient Gemini generation with multi-key rotation, 404 fallback, and 503 backoff
+                const geminiResult = await generateGeminiContent({
+                    botId,
+                    geminiKeysStr: currentBot.geminiKey,
+                    history,
+                    userParts: parts,
+                    systemInstruction: fullSystemPrompt,
+                    firestoreDb
+                });
 
-                while (attempts < maxAttempts) {
-                    try {
-                        const currentAI = genAIs[keyIndex % genAIs.length];
-                        try {
-                            response = await currentAI.models.generateContent({
-                                model: "gemini-2.5-flash",
-                                contents: [...history, { role: 'user', parts }],
-                                config: { systemInstruction: fullSystemPrompt }
-                            });
-                        } catch (modelErr: any) {
-                            if (modelErr.message?.includes("not found") || modelErr.message?.includes("404")) {
-                                response = await currentAI.models.generateContent({
-                                    model: "gemini-1.5-flash",
-                                    contents: [...history, { role: 'user', parts }],
-                                    config: { systemInstruction: fullSystemPrompt }
-                                });
-                            } else {
-                                throw modelErr;
-                            }
-                        }
-                        currentKeyIndexes.set(botId, keyIndex % genAIs.length);
-                        break;
-                    } catch (err: any) {
-                        attempts++;
-                        const is429 = err.message?.includes("429") || err.message?.includes("quota") || err.message?.includes("RESOURCE_EXHAUSTED");
-                        if (is429) {
-                            keyIndex++;
-                            continue;
-                        }
-                        throw err;
-                    }
-                }
-
-                const responseText = response?.text;
+                const responseText = geminiResult.text;
                 if (responseText) {
                     await saveMessage(botId, targetChatJid, 'model', responseText);
                     

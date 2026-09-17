@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { Firestore, doc, getDoc, updateDoc, getDocs, collection, query, where } from 'firebase/firestore';
-import { GoogleGenAI } from '@google/genai';
+import { generateGeminiContent } from './geminiService';
 import { GroupConfig } from '../types';
 import { recordGroupLog } from './groupModeration';
 
@@ -26,30 +26,22 @@ export async function generateDailyMotivation(
   geminiKeysStr?: string,
   language: 'pt' | 'en' = 'pt'
 ): Promise<string> {
-  const keysSource = geminiKeysStr || process.env.GEMINI_API_KEY || '';
-  if (keysSource) {
-    const keys = keysSource.split(',').map(k => k.trim()).filter(Boolean);
-    if (keys.length > 0) {
-      try {
-        const cleanKey = keys[0].replace(/["']/g, '');
-        const ai = new GoogleGenAI({ apiKey: cleanKey });
-        const prompt = language === 'en'
-          ? `Write an inspiring, powerful, and concise daily motivational thought for a professional WhatsApp group. Focus topic: "${topic || 'Productivity, Success and Gratitude'}". Max 2-3 sentences. Do not use hashtags.`
-          : `Escreva uma mensagem motivacional e inspiradora para o dia, direcionada a um grupo de WhatsApp. Tópico/Foco: "${topic || 'Foco, Produtividade, Superação e Sucesso'}". Máximo 2 a 3 frases com impacto e sabedoria. Não use hashtags.`;
+  const prompt = language === 'en'
+    ? `Write an inspiring, powerful, and concise daily motivational thought for a professional WhatsApp group. Focus topic: "${topic || 'Productivity, Success and Gratitude'}". Max 2-3 sentences. Do not use hashtags.`
+    : `Escreva uma mensagem motivacional e inspiradora para o dia, direcionada a um grupo de WhatsApp. Tópico/Foco: "${topic || 'Foco, Produtividade, Superação e Sucesso'}". Máximo 2 a 3 frases com impacto e sabedoria. Não use hashtags.`;
 
-        const resp = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: prompt
-        });
+  try {
+    const result = await generateGeminiContent({
+      botId: 'group_scheduler',
+      geminiKeysStr,
+      prompt
+    });
 
-        const text = resp.text?.trim();
-        if (text && text.length > 10) {
-          return text;
-        }
-      } catch (err) {
-        console.warn('[GroupScheduler] Erro ao gerar mensagem motivacional com Gemini, usando fallback:', err);
-      }
+    if (result.success && result.text && result.text.trim().length > 10) {
+      return result.text.trim();
     }
+  } catch (err) {
+    console.warn('[GroupScheduler] Erro ao gerar mensagem motivacional com Gemini, usando fallback:', err);
   }
 
   // Fallback

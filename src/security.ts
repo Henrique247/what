@@ -18,17 +18,90 @@ export function generateSecureToken(): string {
     return crypto.randomBytes(24).toString('hex');
 }
 
+export type JidType = 'PRIVATE_PN' | 'LID' | 'GROUP' | 'NEWSLETTER' | 'BROADCAST' | 'UNKNOWN';
+
 /**
- * Normalizes any phone number or WhatsApp JID into pure digits.
- * E.g., "+244 942-272-074" -> "244942272074"
- * E.g., "244942272074@s.whatsapp.net" -> "244942272074"
+ * Deterministically classifies a WhatsApp JID or identifier into its canonical type.
+ */
+export function classifyJid(rawJid: string | null | undefined): JidType {
+    if (!rawJid) return 'UNKNOWN';
+    const jid = String(rawJid).trim().toLowerCase();
+    if (jid.endsWith('@g.us')) return 'GROUP';
+    if (jid.endsWith('@lid')) return 'LID';
+    if (jid.endsWith('@newsletter')) return 'NEWSLETTER';
+    if (jid.endsWith('@broadcast') || jid === 'status@broadcast') return 'BROADCAST';
+    if (jid.endsWith('@s.whatsapp.net')) return 'PRIVATE_PN';
+    // If it's pure digits with 8-16 digits, it's a Phone/PN identifier
+    if (/^\+?\d{8,16}$/.test(jid)) return 'PRIVATE_PN';
+    // If it's a numeric LID without domain (typically 14-16 digits starting with specific range),
+    // but in Baileys LIDs always end with @lid. If no domain and length > 16, unknown.
+    return 'UNKNOWN';
+}
+
+/**
+ * Normalizes a phone number or PN JID into numeric digits.
+ * CRITICAL: NEVER applies to @lid identifiers or transforms @lid into a phone number.
  */
 export function normalizePhone(rawPhone: string | null | undefined): string {
     if (!rawPhone) return '';
-    // Strip JID suffix if present
-    const withoutSuffix = rawPhone.split('@')[0];
-    // Keep only numeric digits
+    const trimmed = String(rawPhone).trim();
+    // Do NOT normalize LIDs as phone numbers
+    if (classifyJid(trimmed) === 'LID' || trimmed.toLowerCase().endsWith('@lid')) {
+        return '';
+    }
+    // Strip domain suffix (e.g. @s.whatsapp.net)
+    const withoutSuffix = trimmed.split('@')[0];
     return withoutSuffix.replace(/\D/g, '');
+}
+
+/**
+ * Normalizes a LID identifier into canonical 'user@lid' format.
+ */
+export function normalizeLid(rawLid: string | null | undefined): string {
+    if (!rawLid) return '';
+    const trimmed = String(rawLid).trim().toLowerCase();
+    if (trimmed.endsWith('@lid')) {
+        return trimmed;
+    }
+    if (/^\d{10,20}$/.test(trimmed)) {
+        return `${trimmed}@lid`;
+    }
+    return '';
+}
+
+export interface OwnerIdentity {
+    phone?: string;       // e.g. "244942272074"
+    pn?: string;          // e.g. "244942272074@s.whatsapp.net"
+    lid?: string;         // e.g. "29596971991096@lid"
+    jid?: string;         // e.g. "244942272074@s.whatsapp.net"
+    name?: string;
+}
+
+/**
+ * Resolves the canonical OwnerIdentity from bot configuration.
+ */
+export function resolveOwnerIdentity(currentBot: any): OwnerIdentity {
+    const rawOwner = String(currentBot?.ownerPhone || currentBot?.ownerNumber || currentBot?.ownerJid || '').trim();
+    const rawOwnerLid = String(currentBot?.ownerLid || '').trim();
+    const rawOwnerJid = String(currentBot?.ownerJid || '').trim();
+    const rawOwnerName = String(currentBot?.ownerName || '').trim();
+
+    let lid = normalizeLid(rawOwnerLid);
+    // If rawOwner is itself a LID
+    if (!lid && rawOwner.endsWith('@lid')) {
+        lid = normalizeLid(rawOwner);
+    }
+
+    const phone = normalizePhone(rawOwner);
+    const pn = phone ? `${phone}@s.whatsapp.net` : (rawOwnerJid.endsWith('@s.whatsapp.net') ? rawOwnerJid : undefined);
+
+    return {
+        phone: phone || undefined,
+        pn: pn || undefined,
+        lid: lid || undefined,
+        jid: rawOwnerJid || pn || undefined,
+        name: rawOwnerName || undefined
+    };
 }
 
 /**

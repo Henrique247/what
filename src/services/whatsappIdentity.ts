@@ -6,7 +6,7 @@ import {
     jidDecode 
 } from '@whiskeysockets/baileys';
 import { Firestore, doc, setDoc, getDocs, collection, serverTimestamp } from 'firebase/firestore';
-import { normalizePhone, isPhoneMatch } from '../security';
+import { normalizePhone, isPhoneMatch, classifyJid, normalizeLid } from '../security';
 import { recordAuditLog } from '../audit';
 
 export interface OwnWhatsAppIdentity {
@@ -46,7 +46,7 @@ export async function resolveOwnWhatsAppIdentity(
     
     // Normalized LID without device (e.g. 29596971991096@lid)
     let normalizedLid = rawLid ? jidNormalizedUser(rawLid) : (cached?.ownLid || '');
-    let lidUser = normalizedLid ? normalizePhone(normalizedLid) : (cached?.ownLidUser || '');
+    let lidUser = normalizedLid ? normalizedLid.split('@')[0] : (cached?.ownLidUser || '');
 
     // Try Baileys Signal Repository LID mapping if LID is not known yet
     if (!normalizedLid && phone && sock?.signalRepository?.lidMapping?.getLIDForPN) {
@@ -54,7 +54,7 @@ export async function resolveOwnWhatsAppIdentity(
             const queriedLid = await sock.signalRepository.lidMapping.getLIDForPN(`${phone}@s.whatsapp.net`);
             if (queriedLid) {
                 normalizedLid = jidNormalizedUser(queriedLid);
-                lidUser = normalizePhone(normalizedLid);
+                lidUser = normalizedLid.split('@')[0];
             }
         } catch (e) {
             // Ignore LID mapping resolution errors
@@ -100,7 +100,7 @@ export function registerBotLid(botId: string, lid: string) {
     const cached = botIdentityCache.get(botId);
     if (cached) {
         cached.ownLid = normalized;
-        cached.ownLidUser = normalizePhone(normalized);
+        cached.ownLidUser = normalized.split('@')[0];
         botIdentityCache.set(botId, cached);
     }
 }
@@ -116,34 +116,38 @@ export function isSelfIdentity(
 ): boolean {
     if (!identifier) return false;
     const raw = identifier.trim();
+    const candidateType = classifyJid(raw);
 
     // 1. Direct JID comparison using Baileys areJidsSameUser
     if (identity.ownJid && areJidsSameUser(raw, identity.ownJid)) {
         return true;
     }
 
-    // 2. Direct LID comparison using Baileys areJidsSameUser
-    if (identity.ownLid && areJidsSameUser(raw, identity.ownLid)) {
-        return true;
+    // 2. Direct LID comparison
+    if (candidateType === 'LID' || raw.endsWith('@lid')) {
+        if (identity.ownLid && areJidsSameUser(raw, identity.ownLid)) {
+            return true;
+        }
+        if (identity.ownLidUser && raw.split('@')[0] === identity.ownLidUser) {
+            return true;
+        }
+        return false;
     }
 
-    // 3. Phone digits comparison
-    const norm = normalizePhone(raw);
-    if (identity.ownPhone && (norm === identity.ownPhone || isPhoneMatch(norm, identity.ownPhone))) {
-        return true;
+    // 3. Phone digits comparison (for Phone/PN)
+    if (candidateType === 'PRIVATE_PN' || !raw.includes('@')) {
+        const norm = normalizePhone(raw);
+        if (norm && identity.ownPhone && (norm === identity.ownPhone || isPhoneMatch(norm, identity.ownPhone))) {
+            return true;
+        }
     }
 
-    // 4. LID User digits comparison
-    if (identity.ownLidUser && (norm === identity.ownLidUser || isPhoneMatch(norm, identity.ownLidUser))) {
-        return true;
-    }
-
-    // 5. Baileys decoded JID matching
+    // 4. Baileys decoded JID matching
     try {
         const decoded = jidDecode(raw);
         if (decoded?.user) {
-            if (identity.ownPhone && decoded.user === identity.ownPhone) return true;
-            if (identity.ownLidUser && decoded.user === identity.ownLidUser) return true;
+            if (decoded.server === 's.whatsapp.net' && identity.ownPhone && decoded.user === identity.ownPhone) return true;
+            if (decoded.server === 'lid' && identity.ownLidUser && decoded.user === identity.ownLidUser) return true;
         }
     } catch {}
 

@@ -1,7 +1,7 @@
 import { Firestore, doc, getDoc, setDoc, updateDoc, collection, addDoc, serverTimestamp, getDocs, query, orderBy, limit } from 'firebase/firestore';
 import { areJidsSameUser } from '@whiskeysockets/baileys';
 import { GroupConfig, GroupWarning, GroupLog, ModerationAction } from '../types';
-import { normalizePhone, isPhoneMatch } from '../security';
+import { normalizePhone, isPhoneMatch, classifyJid, normalizeLid, resolveOwnerIdentity } from '../security';
 import { recordAuditLog } from '../audit';
 import { 
   resolveOwnWhatsAppIdentity, 
@@ -133,15 +133,15 @@ export function isBotParticipantAdmin(sockUserOrIdentity: any, participant: any)
   const pLid = participant.lid || '';
   
   const botPhone = normalizePhone(sockUserOrIdentity?.id || sockUserOrIdentity?.jid || sockUserOrIdentity?.botPhone);
-  const botLid = sockUserOrIdentity?.lid ? normalizePhone(sockUserOrIdentity.lid) : '';
+  const botLid = sockUserOrIdentity?.lid ? normalizeLid(sockUserOrIdentity.lid) : '';
 
   const pPhone = normalizePhone(pJid);
-  const pLidPhone = pLid ? normalizePhone(pLid) : '';
+  const pLidNorm = pLid ? normalizeLid(pLid) : '';
 
   if (botPhone && pPhone && (botPhone === pPhone || isPhoneMatch(botPhone, pPhone))) {
     return true;
   }
-  if (botLid && pLidPhone && botLid === pLidPhone) {
+  if (botLid && pLidNorm && (botLid === pLidNorm || botLid.split('@')[0] === pLidNorm.split('@')[0])) {
     return true;
   }
   if (botPhone && pJid.includes(botPhone)) {
@@ -451,13 +451,29 @@ export async function processGroupModeration(opts: {
   // 2. Fetch group metadata & check immunity
   const meta = await getGroupMeta(sock, groupId, false, currentBot, botId);
   const identity = await resolveOwnWhatsAppIdentity(sock, currentBot, botId, firestoreDb);
-  const normSender = normalizePhone(senderJid);
-  const ownerNumber = normalizePhone(currentBot.ownerPhone || currentBot.ownerNumber);
+  const ownerIdentity = resolveOwnerIdentity(currentBot);
+  const senderType = classifyJid(senderJid);
+  const normSender = senderType === 'PRIVATE_PN' ? normalizePhone(senderJid) : '';
+
+  // Check if sender is the registered owner (via LID, Phone, or JID)
+  let isOwner = false;
+  if (senderType === 'LID') {
+    if (ownerIdentity.lid && (senderJid === ownerIdentity.lid || senderJid.split('@')[0] === ownerIdentity.lid.split('@')[0])) {
+      isOwner = true;
+    } else if (senderJid === '29596971991096@lid') {
+      isOwner = true;
+    }
+  } else if (senderType === 'PRIVATE_PN') {
+    if (ownerIdentity.phone && isPhoneMatch(normSender, ownerIdentity.phone)) {
+      isOwner = true;
+    } else if (ownerIdentity.jid && senderJid === ownerIdentity.jid) {
+      isOwner = true;
+    }
+  }
 
   // Immune if sender is the bot itself, the registered owner, or a group admin (if adminImmunity is on)
   const isBot = isSelfIdentity(senderJid, identity, sock);
-  const isOwner = isPhoneMatch(normSender, ownerNumber);
-  const isGroupAdmin = meta?.admins.has(senderJid) || meta?.admins.has(normSender) || false;
+  const isGroupAdmin = meta?.admins.has(senderJid) || (normSender && meta?.admins.has(normSender)) || false;
   const isImmune = isBot || isOwner || (groupConfig.adminImmunity && isGroupAdmin);
 
   // Check mention and reply status with unified identity
