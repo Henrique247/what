@@ -35,6 +35,7 @@ export interface AuditLogEntry {
     fieldsChanged?: string[];
     oldValue?: any;
     newValue?: any;
+    target?: string;
 }
 
 /**

@@ -911,16 +911,64 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
           {/* TAB 3: MOTIVAÇÃO DIÁRIA (IA) */}
           {modalTab === 'automation' && (
             <div className="space-y-5 max-h-[60vh] overflow-y-auto pr-1">
-              <div className="techstar-card p-4 space-y-3 bg-[#0E1217] border border-[#22282F]">
+              <div className="techstar-card p-4 space-y-4 bg-[#0E1217] border border-[#22282F]">
                 <Toggle
                   label="Mensagem Diária Motivacional Automática"
-                  description="Envia uma mensagem gerada com IA (Gemini) todas as manhãs no horário programado."
+                  description="Envia automaticamente mensagens motivacionais ou comunicados regulares no horário programado."
                   checked={groupFormData.dailyMotivationEnabled ?? false}
                   onChange={(checked) => setGroupFormData({ ...groupFormData, dailyMotivationEnabled: checked })}
                 />
 
                 {(groupFormData.dailyMotivationEnabled ?? false) && (
                   <div className="space-y-4 pt-3 border-t border-[#22282F]/60">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="text-xs font-semibold text-zinc-300 block mb-1">
+                          Título da Mensagem
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Ex: Bom dia, equipa! ou Comunicado Diário"
+                          value={groupFormData.dailyMotivationTitle || ''}
+                          onChange={(e) => setGroupFormData({ ...groupFormData, dailyMotivationTitle: e.target.value })}
+                          className="techstar-input text-xs w-full"
+                        />
+                        <span className="text-[11px] text-zinc-500 mt-1 block">
+                          Sem menções forçadas. O título é 100% seu.
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="text-xs font-semibold text-zinc-300 block mb-1">
+                          Modo de Conteúdo
+                        </label>
+                        <select
+                          value={groupFormData.dailyMotivationMode || 'ai'}
+                          onChange={(e) => setGroupFormData({ ...groupFormData, dailyMotivationMode: e.target.value as any })}
+                          className="techstar-input text-xs w-full"
+                        >
+                          <option value="ai">Gerado com Inteligência Artificial (Gemini)</option>
+                          <option value="fixed">Mensagem Fixa Personalizada</option>
+                          <option value="rotating">Frases Rotativas do Sistema</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {groupFormData.dailyMotivationMode === 'fixed' && (
+                      <div>
+                        <label className="text-xs font-semibold text-zinc-300 block mb-1">
+                          Texto Fixo Diário
+                        </label>
+                        <textarea
+                          rows={3}
+                          placeholder="Digite aqui o texto que será enviado todos os dias..."
+                          value={groupFormData.dailyMotivationFixedText || ''}
+                          onChange={(e) => setGroupFormData({ ...groupFormData, dailyMotivationFixedText: e.target.value })}
+                          className="techstar-textarea text-xs w-full"
+                        />
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       <div>
                         <label className="text-xs font-semibold text-zinc-300 block mb-1">
@@ -951,21 +999,35 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
                       </div>
                     </div>
 
-                    <div>
-                      <label className="text-xs font-semibold text-zinc-300 block mb-1">
-                        Tema ou Tópico da Mensagem
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex: Motivação empresarial, foco em vendas, disciplina e metas"
-                        value={groupFormData.dailyMotivationTopic || ''}
-                        onChange={(e) => setGroupFormData({ ...groupFormData, dailyMotivationTopic: e.target.value })}
-                        className="techstar-input text-xs w-full"
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-[#12161B] border border-[#22282F]">
+                      <div>
+                        <span className="text-xs font-semibold text-zinc-200 block">Usar Emojis Visuais</span>
+                        <span className="text-[11px] text-zinc-400">Adiciona ícones de sol, foguete e estrelas na mensagem</span>
+                      </div>
+                      <Toggle
+                        label=""
+                        checked={groupFormData.dailyMotivationUseEmoji ?? true}
+                        onChange={(checked) => setGroupFormData({ ...groupFormData, dailyMotivationUseEmoji: checked })}
                       />
-                      <span className="text-[11px] text-zinc-500 mt-1 block">
-                        A IA irá personalizar as mensagens para refletir este tema sem ser repetitiva.
-                      </span>
                     </div>
+
+                    {groupFormData.dailyMotivationMode !== 'fixed' && (
+                      <div>
+                        <label className="text-xs font-semibold text-zinc-300 block mb-1">
+                          Tema ou Tópico da Mensagem
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Ex: Motivação empresarial, foco em vendas, disciplina e metas"
+                          value={groupFormData.dailyMotivationTopic || ''}
+                          onChange={(e) => setGroupFormData({ ...groupFormData, dailyMotivationTopic: e.target.value })}
+                          className="techstar-input text-xs w-full"
+                        />
+                        <span className="text-[11px] text-zinc-500 mt-1 block">
+                          A IA irá personalizar as mensagens para refletir este tema sem ser repetitiva.
+                        </span>
+                      </div>
+                    )}
 
                     <div className="pt-2">
                       <Button

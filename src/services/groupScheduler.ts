@@ -89,44 +89,88 @@ export async function sendDailyMotivationToGroup(opts: {
   const tz = group.dailyMotivationTimezone || 'Africa/Luanda';
   const todayStr = getTodayDateString(tz);
 
+  // Check days of week if specified (0 = Sunday, 1 = Monday, ..., 6 = Saturday)
+  if (!isTest && Array.isArray(group.dailyMotivationDays) && group.dailyMotivationDays.length > 0) {
+    try {
+      const todayDayOfWeek = new Date().getDay(); // 0..6
+      // Normalize day if 7 was used for Sunday
+      const normalizedDays = group.dailyMotivationDays.map(d => d === 7 ? 0 : d);
+      if (!normalizedDays.includes(todayDayOfWeek)) {
+        console.log(`[GroupScheduler] Hoje (dia ${todayDayOfWeek}) não está na lista de dias de envio para ${groupId}.`);
+        return { success: true, messageText: 'Dia da semana não configurado para envio' };
+      }
+    } catch {}
+  }
+
   // Idempotency: prevent sending twice on the same calendar day (unless it's an explicit manual test)
   if (!isTest && group.lastDailyMotivationDate === todayStr) {
     console.log(`[GroupScheduler] Mensagem diária já enviada hoje (${todayStr}) para o grupo ${groupId}.`);
     return { success: true, messageText: 'Já enviado hoje' };
   }
 
-  const quote = await generateDailyMotivation(
-    group.dailyMotivationTopic,
-    geminiKeys,
-    group.language || 'pt'
-  );
+  // Determine message content based on mode (fixed, ai, rotating)
+  let quote = '';
+  const mode = group.dailyMotivationMode || 'ai';
 
-  const formattedMessage = group.language === 'en'
-    ? `🌅 *Daily Motivation*\n\n"${quote}"\n\nHave a productive and blessed day everyone! ✨`
-    : `🌅 *TECHSTAR | Mensagem do Dia*\n\n"${quote}"\n\nTenham todos um dia produtivo, abençoado e de grandes conquistas! ✨`;
-
-  // Send message to WhatsApp group
-  await sock.sendMessage(groupId, { text: formattedMessage });
-
-  // Update last sent date
-  if (!isTest) {
-    await updateDoc(groupRef, {
-      lastDailyMotivationDate: todayStr
-    });
+  if (mode === 'fixed' && group.dailyMotivationFixedText && group.dailyMotivationFixedText.trim()) {
+    quote = group.dailyMotivationFixedText.trim();
+  } else if (mode === 'rotating') {
+    const randomIndex = Math.floor(Math.random() * MOTIVATIONAL_QUOTES.length);
+    quote = MOTIVATIONAL_QUOTES[randomIndex];
+  } else {
+    // Mode AI (or fallback to rotating)
+    quote = await generateDailyMotivation(
+      group.dailyMotivationTopic,
+      geminiKeys,
+      group.language || 'pt'
+    );
   }
 
-  // Record audit log
-  await recordGroupLog(firestoreDb, {
-    botId,
-    groupId,
-    groupName: group.groupName,
-    action: isTest ? 'TEST_MOTIVATION_SENT' : 'DAILY_MOTIVATION_SENT',
-    actor: 'TECHSTAR_SCHEDULER',
-    details: `Mensagem enviada com sucesso: "${quote.substring(0, 60)}..."`
-  });
+  const title = (group.dailyMotivationTitle || '').trim() || (group.language === 'en' ? 'Daily Motivation' : 'Mensagem do Dia');
+  const useEmoji = group.dailyMotivationUseEmoji !== false;
 
-  console.log(`[GroupScheduler] Mensagem motivacional enviada para o grupo ${group.groupName} (${groupId})`);
-  return { success: true, messageText: formattedMessage };
+  let formattedMessage = '';
+  if (useEmoji) {
+    formattedMessage = `☀️ *${title}*\n\n🚀 "${quote}"\n\n✨ Tenham todos um excelente dia de produtividade e conquistas!`;
+  } else {
+    formattedMessage = `*${title}*\n\n"${quote}"\n\nTenham todos um excelente dia de produtividade e conquistas.`;
+  }
+
+  try {
+    // Send message to WhatsApp group
+    await sock.sendMessage(groupId, { text: formattedMessage });
+
+    // Update last sent date
+    if (!isTest) {
+      await updateDoc(groupRef, {
+        lastDailyMotivationDate: todayStr
+      });
+    }
+
+    // Record audit log
+    await recordGroupLog(firestoreDb, {
+      botId,
+      groupId,
+      groupName: group.groupName,
+      action: isTest ? 'TEST_MOTIVATION_SENT' : 'MOTIVATION_SENT',
+      actor: 'SYSTEM_SCHEDULER',
+      details: `Mensagem motivacional enviada com sucesso: "${quote.substring(0, 60)}..."`
+    });
+
+    console.log(`[GroupScheduler] Mensagem motivacional enviada para o grupo ${group.groupName} (${groupId})`);
+    return { success: true, messageText: formattedMessage };
+  } catch (err: any) {
+    console.error(`[GroupScheduler] Erro ao despachar mensagem motivacional para ${groupId}:`, err);
+    await recordGroupLog(firestoreDb, {
+      botId,
+      groupId,
+      groupName: group.groupName,
+      action: 'MOTIVATION_FAILED',
+      actor: 'SYSTEM_SCHEDULER',
+      details: `Falha no envio de mensagem motivacional: ${err.message}`
+    });
+    throw err;
+  }
 }
 
 /**

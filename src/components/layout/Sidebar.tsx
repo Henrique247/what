@@ -92,37 +92,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
           {/* Navigation Items */}
           <div className="p-3 space-y-6">
-            {/* WORKSPACE */}
-            <div>
-              <div className="px-3 mb-2 text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
-                Workspace
-              </div>
-              <nav className="space-y-1">
-                <button
-                  onClick={() => handleNavClick('dashboard')}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    currentView === 'dashboard'
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
-                  }`}
-                >
-                  <LayoutDashboard className="w-4 h-4" />
-                  <span>Dashboard</span>
-                </button>
+            {/* WORKSPACE (Apenas Admin Global) */}
+            {isAdminMode ? (
+              <div>
+                <div className="px-3 mb-2 text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
+                  Workspace Global
+                </div>
+                <nav className="space-y-1">
+                  <button
+                    onClick={() => handleNavClick('dashboard')}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      currentView === 'dashboard'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <LayoutDashboard className="w-4 h-4" />
+                    <span>Dashboard Geral</span>
+                  </button>
 
-                <button
-                  onClick={() => handleNavClick('bots')}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                    currentView === 'bots'
-                      ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                      : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
-                  }`}
-                >
-                  <BotIcon className="w-4 h-4" />
-                  <span>Meus Bots</span>
-                </button>
+                  <button
+                    onClick={() => handleNavClick('bots')}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                      currentView === 'bots'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <BotIcon className="w-4 h-4" />
+                    <span>Todos os Bots</span>
+                  </button>
 
-                {isAdminMode && (
                   <button
                     onClick={() => {
                       onOpenCreateModal();
@@ -133,15 +133,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <PlusCircle className="w-4 h-4" />
                     <span>Criar Novo Bot</span>
                   </button>
-                )}
-              </nav>
-            </div>
+                </nav>
+              </div>
+            ) : null}
 
             {/* BOT ATIVO / RECURSOS */}
             {selectedBot && (
               <div>
                 <div className="px-3 mb-2 flex items-center justify-between text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
-                  <span>Gestão do Bot</span>
+                  <span>{isAdminMode ? 'Gestão do Bot' : 'Painel do Seu Bot'}</span>
                   <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 </div>
                 
@@ -154,6 +154,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     <p className="text-xs font-semibold text-zinc-200 truncate">{selectedBot.name}</p>
                     <p className="text-[10px] text-zinc-500 font-mono truncate">ID: {selectedBot.id}</p>
                   </div>
+                  {selectedBot.plan && (
+                    <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                      {selectedBot.plan}
+                    </span>
+                  )}
                 </div>
 
                 <nav className="space-y-1">
@@ -268,29 +273,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {/* SISTEMA & SEGURANÇA */}
             <div>
               <div className="px-3 mb-2 text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
-                Segurança & Modo
+                {isAdminMode ? 'Segurança & Modo' : 'Seu Plano & Acesso'}
               </div>
               <div className="p-3 rounded-xl bg-[#101418] border border-[#22282F] space-y-2.5">
                 <div className="flex items-center justify-between">
-                  <span className="text-xs text-zinc-300 font-medium">Modo Atual</span>
+                  <span className="text-xs text-zinc-300 font-medium">
+                    {isAdminMode ? 'Modo de Acesso' : 'Plano Comercial'}
+                  </span>
                   <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
                     isAdminMode ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
                   }`}>
-                    {isAdminMode ? 'MASTER ADMIN' : 'CLIENTE'}
+                    {isAdminMode ? 'MASTER ADMIN' : (selectedBot?.plan?.toUpperCase() || 'PRO')}
                   </span>
                 </div>
                 <p className="text-[11px] text-zinc-500 leading-tight">
                   {isAdminMode 
                     ? 'Acesso irrestrito a configurações, criação e exclusão de bots.'
-                    : 'Visão segura do cliente: chaves Gemini e credenciais ocultadas.'}
+                    : 'Ambiente blindado do cliente: chaves Gemini e credenciais da infraestrutura gerenciadas com segurança.'}
                 </p>
-                <button
-                  onClick={onToggleAdminMode}
-                  className="w-full text-xs font-medium py-1.5 px-2.5 rounded-lg bg-[#151A1F] hover:bg-[#1C2229] border border-[#22282F] text-zinc-300 hover:text-white transition-colors flex items-center justify-center gap-1.5"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Alternar para {isAdminMode ? 'Visão Cliente' : 'Visão Admin'}</span>
-                </button>
+                {isAdminMode ? (
+                  <button
+                    onClick={onToggleAdminMode}
+                    className="w-full text-xs font-medium py-1.5 px-2.5 rounded-lg bg-[#151A1F] hover:bg-[#1C2229] border border-[#22282F] text-zinc-300 hover:text-white transition-colors flex items-center justify-center gap-1.5"
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Simular Visão do Cliente</span>
+                  </button>
+                ) : (
+                  <div className="pt-1 flex flex-col gap-1.5">
+                    <button
+                      onClick={() => {
+                        if (selectedBot) {
+                          localStorage.removeItem(`bot_token_${selectedBot.id}`);
+                        }
+                        window.location.reload();
+                      }}
+                      className="w-full text-xs font-medium py-1.5 px-2.5 rounded-lg bg-[#151A1F] hover:bg-rose-500/10 border border-[#22282F] text-zinc-300 hover:text-rose-400 transition-colors flex items-center justify-center gap-1.5"
+                    >
+                      <span>Sair do Painel</span>
+                    </button>
+                    <a
+                      href="/admin"
+                      className="text-[10px] text-center text-zinc-600 hover:text-zinc-400 transition-colors"
+                    >
+                      Acesso Administrador TechStar →
+                    </a>
+                  </div>
+                )}
               </div>
             </div>
           </div>

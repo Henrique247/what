@@ -44,6 +44,9 @@ import {
     generateOperationalSystemPromptSnippet, 
     handleOperationalKnowledgeQuery 
 } from './src/services/botKnowledgeService';
+import { handleOwnerMissionInput } from './src/services/ownerMissionService';
+import { buildChatContext, formatSystemPromptContext } from './src/services/chatContextService';
+import { ActionExecutor } from './src/services/actionExecutor';
 import { 
     resolveMessageDestination, 
     sendBotMessage, 
@@ -890,7 +893,28 @@ async function startBot(botId: string) {
                     (senderLid && currentBot.ownerLid && senderLid.toLowerCase() === currentBot.ownerLid.toLowerCase())
                 );
 
-                // Intercept direct factual queries about the bot (groups, admin status, ownership, identity, stats)
+                // 1. Intercept owner interactive missions (/menu, state machine, numbered flows)
+                if (cleanText && isOwner) {
+                    const missionResult = await handleOwnerMissionInput({
+                        botId,
+                        ownerJid: senderJid,
+                        text: cleanText,
+                        sock,
+                        firestoreDb,
+                        currentBot,
+                        sendReply: (content) => safeSendMessage(botId, targetChatJid, content, undefined, {
+                            actionName: 'OWNER_MISSION_REPLY',
+                            chatType,
+                            messageId: msg.key?.id
+                        })
+                    });
+
+                    if (missionResult.handled) {
+                        continue;
+                    }
+                }
+
+                // 2. Intercept direct factual queries about the bot (groups, admin status, ownership, identity, stats)
                 if (cleanText) {
                     const opQueryResult = await handleOperationalKnowledgeQuery({
                         text: cleanText,
@@ -1013,18 +1037,19 @@ async function startBot(botId: string) {
 
                 await saveMessage(botId, targetChatJid, 'user', cleanText || "[Mídia enviada]");
 
-                // Obtain real-time operational context (groups, admin status, identity) to ground Gemini responses
-                const opContext = await getBotOperationalContext({
+                // Build isolated chat context based strictly on JID classification
+                const chatContext = await buildChatContext({
                     botId,
-                    firestoreDb,
-                    sock,
-                    currentBot,
+                    targetChatJid,
                     senderJid,
                     senderPn,
                     senderLid,
-                    isOwner
+                    isOwner,
+                    currentBot,
+                    sock,
+                    firestoreDb
                 });
-                const operationalInstruction = generateOperationalSystemPromptSnippet(opContext);
+                const contextualInstruction = formatSystemPromptContext(chatContext, currentBot);
 
                 let ownerInstruction = "";
                 if (isOwner) {
@@ -1033,7 +1058,7 @@ async function startBot(botId: string) {
 
                 const pdfInstruction = "\n\nSe o usuário solicitar um PDF ou se você achar que a resposta deve ser um documento formal, escreva o conteúdo que deve ir no PDF entre as tags <pdf> e </pdf>. O sistema converterá automaticamente esse conteúdo em um arquivo PDF e enviará ao usuário.";
                 const baseSystemPrompt = currentBot.systemPrompt || "Você é um assistente útil e prestativo. Responda de forma clara, natural e objetiva.";
-                const fullSystemPrompt = `${baseSystemPrompt}${operationalInstruction}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
+                const fullSystemPrompt = `${baseSystemPrompt}${contextualInstruction}${ownerInstruction}${pdfInstruction}\n\nBASE DE CONHECIMENTO:\n${currentBot.knowledgeBase || "Nenhuma"}`;
                 
                 await recordAuditLog(firestoreDb, {
                     botId,
@@ -2249,13 +2274,14 @@ app.post('/api/bot/:id/groups/:groupId/test-motivation', requireBotAuth, async (
     }
 });
 
-// 8. Executar ação de administração manual (ex: expulsar membro)
+// 8. Executar ação de administração manual (usando ActionExecutor autoritativo)
 app.post('/api/bot/:id/groups/:groupId/action', requireBotAuth, async (req, res) => {
     try {
         const botId = req.params.id;
         const groupId = req.params.groupId;
-        const { action, participantJid } = req.body;
+        const { action, participantJid, message } = req.body;
         const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
 
         const sock = activeSocks.get(botId);
         if (!sock) {
@@ -2263,30 +2289,71 @@ app.post('/api/bot/:id/groups/:groupId/action', requireBotAuth, async (req, res)
         }
 
         if (action === 'kick' && participantJid) {
-            const meta = await getGroupMeta(sock, groupId);
-            const targetPhone = normalizePhone(participantJid);
-            const botPhone = sock.user?.id ? normalizePhone(sock.user.id) : '';
-            const ownerPhone = normalizePhone(currentBot.ownerPhone || currentBot.ownerNumber);
-
-            if (meta?.admins.has(participantJid) || isPhoneMatch(targetPhone, ownerPhone) || isPhoneMatch(targetPhone, botPhone)) {
-                return res.status(400).json({ error: "Ação bloqueada: Não é permitido remover administradores, o dono ou o próprio bot." });
-            }
-
-            if (!meta?.botIsAdmin) {
-                return res.status(400).json({ error: "O bot precisa ser administrador do grupo no WhatsApp para remover membros." });
-            }
-
-            await sock.groupParticipantsUpdate(groupId, [participantJid], 'remove');
-            await recordGroupLog(firestoreDb, {
+            const result = await ActionExecutor.removeGroupParticipant({
                 botId,
+                actorJid: authRole === 'ADMIN' ? 'admin_web' : (currentBot.ownerPhone || 'client_web'),
+                actorRole: authRole === 'ADMIN' ? 'ADMIN' : 'OWNER',
+                sock,
+                firestoreDb,
+                currentBot,
                 groupId,
-                action: 'MEMBER_REMOVED_MANUAL_PANEL',
-                actor: 'WEB_PANEL',
-                targetUser: targetPhone,
-                details: `Remoção do membro ${targetPhone} executada via Painel Web`
+                targetJid: participantJid
             });
+            if (!result.success) {
+                return res.status(400).json({ error: result.message });
+            }
+            return res.json({ status: result.message });
+        }
 
-            return res.json({ status: `Membro @${targetPhone} removido com sucesso do grupo.` });
+        if (action === 'promote' && participantJid) {
+            const result = await ActionExecutor.promoteParticipant({
+                botId,
+                actorJid: authRole === 'ADMIN' ? 'admin_web' : (currentBot.ownerPhone || 'client_web'),
+                actorRole: authRole === 'ADMIN' ? 'ADMIN' : 'OWNER',
+                sock,
+                firestoreDb,
+                currentBot,
+                groupId,
+                targetJid: participantJid
+            });
+            if (!result.success) {
+                return res.status(400).json({ error: result.message });
+            }
+            return res.json({ status: result.message });
+        }
+
+        if (action === 'demote' && participantJid) {
+            const result = await ActionExecutor.demoteParticipant({
+                botId,
+                actorJid: authRole === 'ADMIN' ? 'admin_web' : (currentBot.ownerPhone || 'client_web'),
+                actorRole: authRole === 'ADMIN' ? 'ADMIN' : 'OWNER',
+                sock,
+                firestoreDb,
+                currentBot,
+                groupId,
+                targetJid: participantJid
+            });
+            if (!result.success) {
+                return res.status(400).json({ error: result.message });
+            }
+            return res.json({ status: result.message });
+        }
+
+        if (action === 'send' && message) {
+            const result = await ActionExecutor.sendGroupMessage({
+                botId,
+                actorJid: authRole === 'ADMIN' ? 'admin_web' : (currentBot.ownerPhone || 'client_web'),
+                actorRole: authRole === 'ADMIN' ? 'ADMIN' : 'OWNER',
+                sock,
+                firestoreDb,
+                currentBot,
+                groupId,
+                message
+            });
+            if (!result.success) {
+                return res.status(400).json({ error: result.message });
+            }
+            return res.json({ status: result.message });
         }
 
         res.status(400).json({ error: "Ação não suportada ou parâmetros inválidos." });
@@ -2449,6 +2516,20 @@ app.get('/api/admin/stats', async (req, res) => {
         }
         recentLogs.sort((a, b) => (new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()));
 
+        const memUsage = process.memoryUsage();
+        const systemMetrics = {
+            heapUsedMb: Math.round(memUsage.heapUsed / 1024 / 1024),
+            heapTotalMb: Math.round(memUsage.heapTotal / 1024 / 1024),
+            rssMb: Math.round(memUsage.rss / 1024 / 1024),
+            uptimeHours: (process.uptime() / 3600).toFixed(1),
+            nodeVersion: process.version
+        };
+
+        const errorLogsCount = recentLogs.filter(l => l.result === 'ERROR' || l.result === 'DENIED').length;
+        const totalAiLogs = recentLogs.filter(l => l.action?.includes('AI_')).length;
+        const successAiLogs = recentLogs.filter(l => l.action?.includes('AI_') && l.result === 'SUCCESS').length;
+        const aiSuccessRate = totalAiLogs > 0 ? `${Math.round((successAiLogs / totalAiLogs) * 100)}%` : '100%';
+
         res.json({
             totalBots: bots.length,
             onlineBots: onlineCount,
@@ -2456,7 +2537,10 @@ app.get('/api/admin/stats', async (req, res) => {
             totalMessages,
             totalUsers: uniqueContacts.size,
             botStats: botStatsList,
-            recentActivity: recentLogs.slice(0, 10)
+            recentActivity: recentLogs.slice(0, 10),
+            systemMetrics,
+            errorLogsCount,
+            aiSuccessRate
         });
     } catch (e) {
         console.error("Erro ao carregar estatísticas do admin:", e);

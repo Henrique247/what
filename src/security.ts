@@ -2,9 +2,17 @@ import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 
 export const PERMISSIONS = {
+    GROUP_MANAGE: 'GROUP_MANAGE',
+    GROUP_VIEW: 'GROUP_VIEW',
+    GROUP_MESSAGE_SEND: 'GROUP_MESSAGE_SEND',
+    GROUP_MESSAGE_DELETE: 'GROUP_MESSAGE_DELETE',
+    GROUP_MEMBER_REMOVE: 'GROUP_MEMBER_REMOVE',
+    GROUP_MEMBER_ADD: 'GROUP_MEMBER_ADD',
+    GROUP_MEMBER_PROMOTE: 'GROUP_MEMBER_PROMOTE',
+    GROUP_MEMBER_DEMOTE: 'GROUP_MEMBER_DEMOTE',
+    GROUP_SETTINGS_UPDATE: 'GROUP_SETTINGS_UPDATE',
     BOT_CONFIG_UPDATE: 'BOT_CONFIG_UPDATE',
     MEMORY_MANAGE: 'MEMORY_MANAGE',
-    GROUP_MANAGE: 'GROUP_MANAGE',
     KNOWLEDGE_MANAGE: 'KNOWLEDGE_MANAGE',
     WHATSAPP_MANAGE: 'WHATSAPP_MANAGE',
     USER_MANAGE: 'USER_MANAGE',
@@ -13,6 +21,35 @@ export const PERMISSIONS = {
 
 export type PermissionKey = keyof typeof PERMISSIONS;
 export const ALL_PERMISSIONS = Object.values(PERMISSIONS);
+
+const OBVIOUS_PINS = new Set([
+    '123456', '000000', '111111', '123123', '654321', 
+    '222222', '333333', '444444', '555555', '666666', 
+    '777777', '888888', '999999', '12345678', '87654321',
+    '012345', '543210'
+]);
+
+/**
+ * Validates a bot owner PIN for security and commercial compliance.
+ * Requires 6-8 digits and rejects common trivial sequences.
+ */
+export function validatePin(pin: string): { valid: boolean; reason?: string } {
+    if (!pin || typeof pin !== 'string') {
+        return { valid: false, reason: 'PIN deve ser informado.' };
+    }
+    const clean = pin.trim();
+    if (!/^\d{6,8}$/.test(clean)) {
+        return { valid: false, reason: 'O PIN deve conter entre 6 e 8 dígitos numéricos.' };
+    }
+    if (OBVIOUS_PINS.has(clean)) {
+        return { valid: false, reason: 'PIN muito simples ou sequencial. Escolha um código mais seguro.' };
+    }
+    // Check all identical digits (e.g. 0000000)
+    if (/^(\d)\1+$/.test(clean)) {
+        return { valid: false, reason: 'O PIN não pode ter todos os dígitos repetidos.' };
+    }
+    return { valid: true };
+}
 
 export function generateSecureToken(): string {
     return crypto.randomBytes(24).toString('hex');

@@ -185,6 +185,72 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
         )}
       </div>
 
+      {/* System Health & AI Infrastructure Monitoring (Item 35) */}
+      {isAdminMode && stats?.systemMetrics && (
+        <div className="techstar-card p-5 border border-[#22282F] bg-gradient-to-r from-[#0E1217] via-[#12161D] to-[#0E1217]">
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                <ShieldCheck className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
+                  Saúde do Sistema & Infraestrutura
+                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    ONLINE
+                  </span>
+                </h3>
+                <p className="text-xs text-zinc-400">
+                  Monitoramento em tempo real do runtime Node.js, Baileys e pipeline Gemini
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] font-mono text-zinc-500">
+              Node {stats.systemMetrics.nodeVersion}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-[#22282F]/70">
+            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
+              <span className="text-[11px] text-zinc-400 font-medium block">Memória RAM (Heap)</span>
+              <span className="text-lg font-bold text-zinc-100 font-mono mt-0.5 block">
+                {stats.systemMetrics.heapUsedMb} MB
+              </span>
+              <span className="text-[10px] text-zinc-500">
+                de {stats.systemMetrics.heapTotalMb} MB alocados
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
+              <span className="text-[11px] text-zinc-400 font-medium block">Uptime do Servidor</span>
+              <span className="text-lg font-bold text-zinc-100 font-mono mt-0.5 block">
+                {stats.systemMetrics.uptimeHours} h
+              </span>
+              <span className="text-[10px] text-emerald-400 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Operação Contínua 24h
+              </span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
+              <span className="text-[11px] text-zinc-400 font-medium block">Taxa de Sucesso IA</span>
+              <span className="text-lg font-bold text-emerald-400 font-mono mt-0.5 block">
+                {stats.aiSuccessRate || '100%'}
+              </span>
+              <span className="text-[10px] text-zinc-500">Pipeline Gemini Ativo</span>
+            </div>
+
+            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
+              <span className="text-[11px] text-zinc-400 font-medium block">Erros / Bloqueios</span>
+              <span className={`text-lg font-bold font-mono mt-0.5 block ${(stats.errorLogsCount || 0) > 0 ? 'text-amber-400' : 'text-zinc-300'}`}>
+                {stats.errorLogsCount || 0}
+              </span>
+              <span className="text-[10px] text-zinc-500">Eventos não-sucesso auditados</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main Content Grid: Bots Recentes & Atividade de Auditoria */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left 2 Cols: Bots em Destaque */}

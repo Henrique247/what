@@ -32,6 +32,13 @@ export interface Bot {
   firstAccessCompleted?: boolean;
   qr?: string | null;
   hasQR?: boolean;
+  plan?: 'FREE' | 'STARTER' | 'PRO' | 'BUSINESS';
+  planLimits?: {
+    maxMessagesPerMonth?: number;
+    maxGroups?: number;
+    maxKnowledgeChars?: number;
+    aiEnabled?: boolean;
+  };
   createdAt?: any;
 }
 
@@ -51,6 +58,15 @@ export interface AdminStats {
   totalUsers: number;
   botStats: BotSummaryStat[];
   recentActivity: AuditLog[];
+  systemMetrics?: {
+    heapUsedMb: number;
+    heapTotalMb: number;
+    rssMb: number;
+    uptimeHours: string;
+    nodeVersion: string;
+  };
+  errorLogsCount?: number;
+  aiSuccessRate?: string;
 }
 
 export interface BotStats {
@@ -130,6 +146,11 @@ export interface GroupConfig {
   
   // Daily Scheduled Automation
   dailyMotivationEnabled: boolean;
+  dailyMotivationTitle?: string;
+  dailyMotivationUseEmoji?: boolean;
+  dailyMotivationMode?: 'fixed' | 'ai' | 'rotating';
+  dailyMotivationFixedText?: string;
+  dailyMotivationDays?: number[]; // [1, 2, 3, 4, 5, 6, 0]
   dailyMotivationTime: string; // "08:00"
   dailyMotivationTimezone: string; // e.g. "Africa/Luanda"
   dailyMotivationTopic?: string;
