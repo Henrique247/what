@@ -31,7 +31,8 @@ import {
   Settings,
   Shield,
   SunMedium,
-  Radio
+  Radio,
+  FileText
 } from 'lucide-react';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -46,6 +47,7 @@ import { BotSettingsTab } from '../components/settings/BotSettingsTab';
 import { PrivateSettingsCard } from '../components/settings/PrivateSettingsCard';
 import { ModerationSettingsCard } from '../components/settings/ModerationSettingsCard';
 import { MotivationSettingsCard } from '../components/settings/MotivationSettingsCard';
+import { DocumentPdfCard } from '../components/DocumentPdfCard';
 
 interface BotManagePageProps {
   bot: Bot;
@@ -1052,18 +1054,28 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
 
               <button
                 type="button"
-                onClick={() => onSelectTab('settings')}
+                onClick={() => onSelectTab('documents')}
                 className="p-4 rounded-xl bg-[#101418] border border-[#22282F] hover:border-emerald-500/30 text-left transition-all group"
               >
-                <Settings className="w-5 h-5 text-emerald-400 mb-2 group-hover:scale-110 transition-transform" />
-                <h4 className="text-xs font-semibold text-zinc-200">Regras e Configurações Globais</h4>
+                <FileText className="w-5 h-5 text-emerald-400 mb-2 group-hover:scale-110 transition-transform" />
+                <h4 className="text-xs font-semibold text-zinc-200">Gerador & Emissor de PDF</h4>
                 <p className="text-[11px] text-zinc-500 mt-1">
-                  Ajustar prompts, limites de respostas e moderação automática.
+                  Criar documentos e relatórios e enviar diretamente pelo WhatsApp.
                 </p>
               </button>
             </div>
           </div>
         </div>
+      )}
+
+      {/* 14. DOCUMENTOS E PDF */}
+      {activeTab === 'documents' && (
+        <DocumentPdfCard
+          botId={bot.id}
+          botName={bot.name}
+          clientToken={clientToken}
+          isAdminMode={isAdminMode}
+        />
       )}
 
       {/* Modal Confirmar Reset de WhatsApp */}

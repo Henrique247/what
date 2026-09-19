@@ -48,6 +48,7 @@ export interface Bot {
   aiModel?: string;
   aiState?: string;
   aiFallbackActive?: boolean;
+  naturalConversationEnabled?: boolean;
   respondOnlyOnMentionOrReply?: boolean;
   responseCooldownSeconds?: number;
   antiLinkEnabled?: boolean;
@@ -142,6 +143,7 @@ export type ActiveTab =
   | 'knowledge'
   | 'automation'
   | 'motivation'
+  | 'documents'
   | 'intelligence'
   | 'stats'
   | 'logs'

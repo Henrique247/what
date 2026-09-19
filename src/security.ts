@@ -166,17 +166,25 @@ export function hasPermission(bot: any, permission: string): boolean {
 }
 
 /**
- * Sanitizes bot configuration to ensure secrets (Gemini keys, internal tokens)
+ * Sanitizes bot configuration to ensure secrets (Gemini keys, internal tokens, PIN hashes)
  * are NEVER returned to the client frontend.
  */
 export function sanitizeBotForClient(bot: any, status?: string, qr?: string | null) {
     if (!bot) return null;
-    const { geminiKeys, pinHash, ...safeBot } = bot;
+    const { 
+        geminiKeys, 
+        pinHash, 
+        botPinHash, 
+        adminPinHash, 
+        accessToken, 
+        sessionSecret, 
+        ...safeBot 
+    } = bot;
     return {
         ...safeBot,
-        hasGeminiKeys: !!geminiKeys && geminiKeys.trim().length > 0,
-        geminiKeysConfigured: !!geminiKeys && geminiKeys.trim().length > 0,
-        pinConfigured: !!pinHash,
+        hasGeminiKeys: !!geminiKeys && String(geminiKeys).trim().length > 0,
+        geminiKeysConfigured: !!geminiKeys && String(geminiKeys).trim().length > 0,
+        pinConfigured: !!(pinHash || botPinHash),
         status: status || "Desconectado",
         qr: qr || null
     };

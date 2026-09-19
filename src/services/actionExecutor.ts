@@ -505,4 +505,101 @@ export class ActionExecutor {
             return { success: false, message: 'Falha ao enviar mensagem privada.', error: err.message, auditStatus: 'ERROR' };
         }
     }
+
+    /**
+     * Sends a document (such as a PDF) to a group or private contact with real Baileys confirmation and auditing.
+     */
+    static async sendDocument(params: ActionExecutorParams & {
+        targetJid: string;
+        documentBuffer: Buffer;
+        fileName: string;
+        mimetype?: string;
+        caption?: string;
+    }): Promise<ActionResult> {
+        const { botId, actorJid, actorRole, sock, firestoreDb, targetJid, documentBuffer, fileName, mimetype, caption } = params;
+        const startTime = Date.now();
+
+        if (!sock) return { success: false, message: 'WhatsApp desconectado.', auditStatus: 'ERROR' };
+
+        if (!targetJid || (!targetJid.endsWith('@g.us') && !targetJid.endsWith('@s.whatsapp.net'))) {
+            return {
+                success: false,
+                message: `Destinatário inválido para envio de documento: ${targetJid}`,
+                auditStatus: 'ERROR'
+            };
+        }
+
+        if (!documentBuffer || documentBuffer.length === 0) {
+            return {
+                success: false,
+                message: 'O documento gerado está vazio.',
+                auditStatus: 'ERROR'
+            };
+        }
+
+        try {
+            await recordAuditLog(firestoreDb, {
+                botId,
+                actorId: actorJid,
+                actorRole,
+                action: 'DOCUMENT_SEND_ATTEMPT',
+                chatId: targetJid,
+                chatType: targetJid.endsWith('@g.us') ? 'GROUP' : 'PRIVATE',
+                result: 'SUCCESS',
+                details: `Tentativa de envio do documento ${fileName} (${documentBuffer.length} bytes)`
+            });
+
+            const sentDoc = await sock.sendMessage(targetJid, {
+                document: documentBuffer,
+                mimetype: mimetype || 'application/pdf',
+                fileName: fileName.endsWith('.pdf') ? fileName : `${fileName}.pdf`,
+                caption: caption || undefined
+            });
+
+            const messageId = sentDoc?.key?.id;
+            if (!messageId) {
+                throw new Error('Baileys não retornou confirmação de entrega do documento.');
+            }
+
+            const duration = Date.now() - startTime;
+            await recordAuditLog(firestoreDb, {
+                botId,
+                actorId: actorJid,
+                actorRole,
+                action: 'DOCUMENT_SEND_SUCCESS',
+                chatId: targetJid,
+                chatType: targetJid.endsWith('@g.us') ? 'GROUP' : 'PRIVATE',
+                result: 'SUCCESS',
+                duration,
+                messageId,
+                details: `Documento ${fileName} enviado com sucesso (ID: ${messageId}).`
+            });
+
+            return {
+                success: true,
+                message: `Documento "${fileName}" enviado com sucesso!`,
+                data: { messageId, durationMs: duration },
+                auditStatus: 'SUCCESS'
+            };
+        } catch (err: any) {
+            console.error(`[ActionExecutor] Erro ao enviar documento para ${targetJid}:`, err);
+            await recordAuditLog(firestoreDb, {
+                botId,
+                actorId: actorJid,
+                actorRole,
+                action: 'DOCUMENT_SEND_FAILED',
+                chatId: targetJid,
+                chatType: targetJid.endsWith('@g.us') ? 'GROUP' : 'PRIVATE',
+                result: 'ERROR',
+                errorMessage: err.message,
+                details: `Falha técnica ao enviar documento ${fileName} para ${targetJid}: ${err.message}`
+            });
+            return {
+                success: false,
+                message: `Não foi possível enviar o documento: ${err.message}`,
+                error: err.message,
+                auditStatus: 'ERROR'
+            };
+        }
+    }
 }

@@ -422,6 +422,33 @@ class ApiService {
     }
     return data;
   }
+  async generatePdf(botId: string, pdfOptions: any, token?: string, isAdmin: boolean = false): Promise<Blob> {
+    const url = token ? `/api/bot/${botId}/pdf/generate?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/pdf/generate`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify(pdfOptions)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao gerar documento PDF.');
+    }
+    return res.blob();
+  }
+
+  async sendPdfViaWhatsApp(botId: string, payload: any, token?: string, isAdmin: boolean = false): Promise<{ success: boolean; status: string; messageId?: string; durationMs?: number }> {
+    const url = token ? `/api/bot/${botId}/pdf/send?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/pdf/send`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao enviar PDF pelo WhatsApp.');
+    }
+    return data;
+  }
 }
 
 export const api = new ApiService();

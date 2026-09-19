@@ -47,6 +47,7 @@ import {
 import { handleOwnerMissionInput } from './src/services/ownerMissionService';
 import { buildChatContext, formatSystemPromptContext } from './src/services/chatContextService';
 import { ActionExecutor } from './src/services/actionExecutor';
+import { generatePdfBuffer, PdfGenerationOptions } from './src/services/pdfService';
 import { 
     resolveMessageDestination, 
     sendBotMessage, 
@@ -2827,6 +2828,148 @@ app.post('/api/bot/:id/groups/:groupId/action', requireBotAuth, async (req, res)
         res.status(400).json({ error: "Ação não suportada ou parâmetros inválidos." });
     } catch (err: any) {
         res.status(500).json({ error: "Erro ao executar ação: " + err.message });
+    }
+});
+
+// ==========================================
+// GERAÇÃO E ENVIO DE DOCUMENTOS / PDF
+// ==========================================
+
+// 1. Gerar e baixar PDF sob demanda
+app.post(['/api/bots/:id/pdf/generate', '/api/bot/:id/pdf/generate'], requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        const {
+            title,
+            content,
+            pageSize,
+            orientation,
+            font,
+            fontSize,
+            margins,
+            headerText,
+            footerText,
+            paginationEnabled
+        } = req.body;
+
+        if (!title || !content) {
+            return res.status(400).json({ error: 'Título e conteúdo são obrigatórios para gerar o PDF.' });
+        }
+
+        const pdfBuffer = await generatePdfBuffer({
+            title,
+            content,
+            pageSize,
+            orientation,
+            font,
+            fontSize: fontSize ? Number(fontSize) : undefined,
+            margins,
+            headerText,
+            footerText,
+            paginationEnabled,
+            author: currentBot.name || 'Assistente TechStar'
+        });
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            actorId: authRole === 'ADMIN' ? 'admin_web' : (currentBot.ownerPhone || 'client_web'),
+            actorRole: authRole === 'ADMIN' ? 'ADMIN' : 'OWNER',
+            action: 'PDF_GENERATED',
+            result: 'SUCCESS',
+            details: `PDF "${title}" gerado com sucesso (${pdfBuffer.length} bytes)`
+        });
+
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.pdf"`);
+        res.setHeader('Content-Length', pdfBuffer.length);
+        res.end(pdfBuffer);
+    } catch (err: any) {
+        console.error("Erro ao gerar PDF:", err);
+        res.status(500).json({ error: "Erro ao gerar PDF: " + err.message });
+    }
+});
+
+// 2. Gerar e enviar PDF diretamente via WhatsApp para Grupo ou Privado
+app.post(['/api/bots/:id/pdf/send', '/api/bot/:id/pdf/send'], requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        const sock = activeSocks.get(botId);
+        if (!sock) {
+            return res.status(400).json({ error: 'O WhatsApp do bot precisa estar conectado para enviar documentos.' });
+        }
+
+        const {
+            targetJid,
+            title,
+            content,
+            pageSize,
+            orientation,
+            font,
+            fontSize,
+            margins,
+            headerText,
+            footerText,
+            paginationEnabled,
+            caption
+        } = req.body;
+
+        if (!targetJid) {
+            return res.status(400).json({ error: 'Destinatário (targetJid) não fornecido.' });
+        }
+
+        if (!title || !content) {
+            return res.status(400).json({ error: 'Título e conteúdo são obrigatórios para enviar o PDF.' });
+        }
+
+        const pdfBuffer = await generatePdfBuffer({
+            title,
+            content,
+            pageSize,
+            orientation,
+            font,
+            fontSize: fontSize ? Number(fontSize) : undefined,
+            margins,
+            headerText,
+            footerText,
+            paginationEnabled,
+            author: currentBot.name || 'Assistente TechStar'
+        });
+
+        const fileName = `${title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.pdf`;
+
+        const result = await ActionExecutor.sendDocument({
+            botId,
+            actorJid: authRole === 'ADMIN' ? 'admin_web' : (currentBot.ownerPhone || 'client_web'),
+            actorRole: authRole === 'ADMIN' ? 'ADMIN' : 'OWNER',
+            sock,
+            firestoreDb,
+            currentBot,
+            targetJid,
+            documentBuffer: pdfBuffer,
+            fileName,
+            mimetype: 'application/pdf',
+            caption: caption || `📄 Documento: *${title}*`
+        });
+
+        if (!result.success) {
+            return res.status(400).json({ error: result.message, auditStatus: result.auditStatus });
+        }
+
+        res.json({
+            success: true,
+            status: result.message,
+            messageId: result.data?.messageId,
+            durationMs: result.data?.durationMs
+        });
+    } catch (err: any) {
+        console.error("Erro ao enviar PDF via WhatsApp:", err);
+        res.status(500).json({ error: "Erro ao enviar PDF: " + err.message });
     }
 });
 

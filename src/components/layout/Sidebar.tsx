@@ -306,6 +306,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <button
                     onClick={() => {
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
+                      handleTabClick('documents');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                      currentView === 'manage' && activeBotTab === 'documents'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <FileText className="w-4 h-4" />
+                    <span>Documentos & PDF</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('stats');
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
