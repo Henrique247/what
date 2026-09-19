@@ -140,6 +140,91 @@ export async function handleOwnerMissionInput(opts: {
         return { handled: true };
     }
 
+    // 3. Direct Command: "Enviar <índice> <mensagem>" (ex: "Enviar 13 Estou a funcionar")
+    const sendByIndexMatch = cleanText.match(/^(?:\/|!)?(?:enviar|mandar|postar)\s+(\d+)\s+([\s\S]+)$/i);
+    if (sendByIndexMatch) {
+        const groupIndex = parseInt(sendByIndexMatch[1], 10);
+        const messageToSend = sendByIndexMatch[2].trim();
+
+        if (!messageToSend) {
+            await sendReply({ text: '❌ A mensagem não pode estar vazia. Exemplo: *Enviar 13 Estou a funcionar*' });
+            return { handled: true };
+        }
+
+        const groups = await getBotGroups(botId, firestoreDb, sock, currentBot, true);
+        if (groups.length === 0) {
+            await sendReply({ text: '❌ O bot não está presente em nenhum grupo no momento.' });
+            return { handled: true };
+        }
+
+        const targetIdx = groupIndex - 1;
+        if (isNaN(targetIdx) || targetIdx < 0 || targetIdx >= groups.length) {
+            await sendReply({
+                text: `❌ Grupo de índice *${groupIndex}* não encontrado.\n\nO bot participa de *${groups.length}* grupo(s) (índices válidos: 1 a ${groups.length}).\nDigite */grupos* para ver a listagem numerada atualizada.`
+            });
+            return { handled: true };
+        }
+
+        const targetGroup = groups[targetIdx];
+        if (!targetGroup.groupId || !targetGroup.groupId.endsWith('@g.us')) {
+            await sendReply({
+                text: `❌ O grupo selecionado (*${targetGroup.groupName}*) possui um identificador inválido (${targetGroup.groupId}).`
+            });
+            return { handled: true };
+        }
+
+        // Execute real action via ActionExecutor
+        const result = await ActionExecutor.sendGroupMessage({
+            botId,
+            actorJid: ownerJid,
+            actorRole: 'OWNER',
+            sock,
+            firestoreDb,
+            currentBot,
+            groupId: targetGroup.groupId,
+            message: messageToSend
+        });
+
+        if (result.success) {
+            const msgIdNote = result.data?.messageId ? ` (ID: ${result.data.messageId})` : '';
+            await sendReply({
+                text: `✅ Mensagem enviada com êxito para o grupo *${targetGroup.groupName}* (índice ${groupIndex})${msgIdNote}:\n\n"${messageToSend}"`
+            });
+        } else {
+            await sendReply({
+                text: `❌ Falha ao enviar mensagem para o grupo *${targetGroup.groupName}*: ${result.message}`
+            });
+        }
+        return { handled: true, finalActionTaken: true };
+    }
+
+    // 4. Direct Command: "/grupos" or "grupos"
+    if (['/grupos', 'grupos', '!grupos'].includes(cleanText.toLowerCase())) {
+        const groups = await getBotGroups(botId, firestoreDb, sock, currentBot, true);
+        if (groups.length === 0) {
+            await sendReply({ text: '📁 Atualmente o bot não está presente em nenhum grupo.' });
+        } else {
+            const list = groups.slice(0, 30).map((g, i) => `${i + 1}. ${g.botIsAdmin ? '👑' : '👥'} *${g.groupName}* (${g.participantCount} membros)`).join('\n');
+            const more = groups.length > 30 ? `\n... e mais ${groups.length - 30} grupos.` : '';
+            await sendReply({ text: `📁 *Meus Grupos Conectados (${groups.length})*\n\n${list}${more}\n\n_Para enviar mensagem direta, digite: Enviar <número> <sua mensagem>_` });
+        }
+        return { handled: true };
+    }
+
+    // 5. Direct Command: "/admin_grupos" or "/grupos_admin"
+    if (['/admin_grupos', '/grupos_admin', 'grupos admin', '!admin_grupos'].includes(cleanText.toLowerCase())) {
+        const groups = await getBotGroups(botId, firestoreDb, sock, currentBot, true);
+        const admins = groups.filter(g => g.botIsAdmin);
+        if (admins.length === 0) {
+            await sendReply({ text: `👑 O bot não possui permissão de administrador em nenhum dos seus ${groups.length} grupos.` });
+        } else {
+            const list = admins.slice(0, 30).map((g, i) => `${i + 1}. 👑 *${g.groupName}* (${g.participantCount} membros)`).join('\n');
+            const more = admins.length > 30 ? `\n... e mais ${admins.length - 30} grupos.` : '';
+            await sendReply({ text: `👑 *Grupos onde sou Administrador (${admins.length})*\n\n${list}${more}` });
+        }
+        return { handled: true };
+    }
+
     // If no active mission, pass through to other handlers
     if (!existing) {
         return { handled: false };

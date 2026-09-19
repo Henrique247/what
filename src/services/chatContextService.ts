@@ -152,14 +152,42 @@ export async function buildChatContext(opts: {
 }
 
 /**
+ * Helper to get the current date and time formatted specifically for Africa/Luanda (UTC+1).
+ */
+export function getLuandaTemporalInfo(): { fullText: string; timeStr: string; dateStr: string; timezone: string } {
+    const now = new Date();
+    const dateStr = new Intl.DateTimeFormat('pt-PT', {
+        timeZone: 'Africa/Luanda',
+        dateStyle: 'full'
+    }).format(now);
+
+    const timeStr = new Intl.DateTimeFormat('pt-PT', {
+        timeZone: 'Africa/Luanda',
+        timeStyle: 'medium'
+    }).format(now);
+
+    return {
+        fullText: `${dateStr}, às ${timeStr} (Horário de Angola - Africa/Luanda, UTC+1)`,
+        timeStr,
+        dateStr,
+        timezone: 'Africa/Luanda (UTC+1)'
+    };
+}
+
+/**
  * Formats the strict system prompt injection matching user guidelines:
  * - In GROUP: ONLY injects that group's details. No other groups.
  * - In PRIVATE: ONLY injects private conversational context. No group details.
+ * - Temporal context: Always accurate to Africa/Luanda (UTC+1).
  */
 export function formatSystemPromptContext(context: ChatContext, currentBot: any): string {
+    const temporal = getLuandaTemporalInfo();
+    const temporalSnippet = `\nContexto Temporal Atual: ${temporal.fullText}`;
+
     if (context.type === 'GROUP') {
         const adminNames = context.admins.slice(0, 10).join(', ');
         return `\n\n=== CONTEXTO DO GRUPO ATUAL (ISOLADO) ===
+${temporalSnippet}
 Grupo ID: ${context.groupId}
 Nome do Grupo: ${context.groupName}
 Total de Membros: ${context.memberCount}
@@ -177,6 +205,7 @@ Regra: Você está respondendo dentro deste grupo. NUNCA cite informações priv
     }
 
     return `\n\n=== CONTEXTO DA CONVERSA PRIVADA (ISOLADO) ===
+${temporalSnippet}
 Tipo: Conversa Direta Privada
 Interlocutor: ${context.currentUser.phone ? `+${context.currentUser.phone}` : context.currentUser.jid}
 Proprietário: ${context.isOwner ? 'SIM' : 'NÃO'}${ownerSnippet}

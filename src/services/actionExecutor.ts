@@ -84,24 +84,71 @@ export class ActionExecutor {
             };
         }
 
-        try {
-            await sock.sendMessage(groupId, { text: message.trim() });
-
+        // 2. Validate group destination JID
+        if (!groupId || !groupId.endsWith('@g.us')) {
             await recordAuditLog(firestoreDb, {
                 botId,
                 actorId: actorJid,
                 actorRole,
-                action: 'GROUP_MESSAGE_SEND',
+                action: 'GROUP_MESSAGE_SEND_FAILED',
+                chatId: groupId,
+                chatType: 'GROUP',
+                result: 'ERROR',
+                details: `JID inválido para grupo: ${groupId}`
+            });
+            return {
+                success: false,
+                message: `Destinatário inválido para grupo: ${groupId}. O identificador deve terminar em @g.us.`,
+                auditStatus: 'ERROR'
+            };
+        }
+
+        const trimmed = (message || '').trim();
+        if (!trimmed) {
+            return {
+                success: false,
+                message: 'A mensagem não pode estar vazia.',
+                auditStatus: 'ERROR'
+            };
+        }
+
+        try {
+            await recordAuditLog(firestoreDb, {
+                botId,
+                actorId: actorJid,
+                actorRole,
+                action: 'GROUP_MESSAGE_SEND_ATTEMPT',
                 chatId: groupId,
                 chatType: 'GROUP',
                 result: 'SUCCESS',
-                duration: Date.now() - startTime,
-                details: `Mensagem enviada com sucesso para o grupo ${groupId}.`
+                details: `Tentativa de envio de mensagem para o grupo ${groupId}`
+            });
+
+            const sentMsg = await sock.sendMessage(groupId, { text: trimmed });
+            const messageId = sentMsg?.key?.id;
+
+            if (!messageId) {
+                throw new Error('Baileys não retornou confirmação de entrega (messageId ausente).');
+            }
+
+            const duration = Date.now() - startTime;
+            await recordAuditLog(firestoreDb, {
+                botId,
+                actorId: actorJid,
+                actorRole,
+                action: 'GROUP_MESSAGE_SEND_SUCCESS',
+                chatId: groupId,
+                chatType: 'GROUP',
+                result: 'SUCCESS',
+                duration,
+                messageId,
+                details: `Mensagem enviada com sucesso para o grupo ${groupId} (ID: ${messageId}).`
             });
 
             return {
                 success: true,
                 message: 'Mensagem enviada para o grupo com sucesso.',
+                data: { messageId },
                 auditStatus: 'SUCCESS'
             };
         } catch (err: any) {
@@ -115,11 +162,11 @@ export class ActionExecutor {
                 chatType: 'GROUP',
                 result: 'ERROR',
                 errorMessage: err.message,
-                details: 'Falha técnica ao despachar mensagem no Baileys.'
+                details: `Falha técnica ao despachar mensagem no Baileys para ${groupId}: ${err.message}`
             });
             return {
                 success: false,
-                message: 'Não foi possível enviar a mensagem para o grupo. Tente novamente.',
+                message: `Não foi possível enviar a mensagem para o grupo: ${err.message || 'Erro no WhatsApp'}`,
                 error: err.message,
                 auditStatus: 'ERROR'
             };
