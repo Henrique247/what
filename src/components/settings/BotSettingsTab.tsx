@@ -188,6 +188,9 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
         <AISettingsCard
           formData={formData}
           onChange={handleChange}
+          botId={bot.id}
+          clientToken={clientToken}
+          isAdminMode={isAdminMode}
         />
 
         {/* 5. Conversas Privadas (1:1) */}
@@ -213,6 +216,9 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
         <MotivationSettingsCard
           formData={formData}
           onChange={handleChange}
+          botId={bot.id}
+          clientToken={clientToken}
+          isAdminMode={isAdminMode}
         />
 
         {/* 9. Conexão WhatsApp */}

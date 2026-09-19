@@ -19,14 +19,18 @@ export const BotLoginPage: React.FC<BotLoginPageProps> = ({ botId, onLoginSucces
   const [firstAccessRequired, setFirstAccessRequired] = useState(false);
 
   useEffect(() => {
-    api.getBotConfig(botId, undefined, true).then((b) => {
-      setBotName(b.name || 'Assistente TechStar');
-      if (b.pinHash === null || b.pinHash === undefined || b.firstAccessCompleted === false) {
-        setFirstAccessRequired(true);
-      }
-    }).catch(() => {
-      setBotName('Assistente TechStar');
-    });
+    fetch(`/api/bot/${botId}/public`)
+      .then((res) => {
+        if (!res.ok) throw new Error('Falha ao carregar informações');
+        return res.json();
+      })
+      .then((data) => {
+        if (data.name) setBotName(data.name);
+        if (data.firstAccessRequired) setFirstAccessRequired(true);
+      })
+      .catch(() => {
+        setBotName('Assistente TechStar');
+      });
   }, [botId]);
 
   const handleLogin = async (e: React.FormEvent) => {

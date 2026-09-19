@@ -1005,6 +1005,9 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
           <MotivationSettingsCard
             formData={formData}
             onChange={handleChange}
+            botId={bot.id}
+            clientToken={clientToken}
+            isAdminMode={isAdminMode}
           />
           <div className="flex justify-end">
             <Button

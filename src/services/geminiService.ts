@@ -90,6 +90,8 @@ export interface GeminiGenerateOptions {
     botId: string;
     geminiKeysStr?: string;
     keys?: string[];
+    model?: string;
+    fallbackModels?: string[];
     history?: any[];
     prompt?: string;
     userParts?: any[];
@@ -105,6 +107,7 @@ export interface GeminiGenerateResult {
     success: boolean;
     text: string | null;
     usedModel: string;
+    modelUsed?: string;
     usedKeyMasked: string;
     attempts: number;
     error?: string;
@@ -123,6 +126,8 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
         botId,
         geminiKeysStr,
         keys: directKeys,
+        model: overrideModel,
+        fallbackModels: overrideFallbackModels,
         history = [],
         prompt,
         userParts,
@@ -134,6 +139,12 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
     } = options;
 
     const pipelineStartTime = Date.now();
+
+    const activeFallbackModels: string[] = overrideFallbackModels || (
+        overrideModel 
+            ? Array.from(new Set([overrideModel, ...GEMINI_FALLBACK_MODELS])) 
+            : GEMINI_FALLBACK_MODELS
+    );
 
     // 1. Collect and clean available API keys
     let rawKeys: string[] = directKeys || [];
@@ -183,16 +194,16 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
     let currentKeyIdx = botKeyIndexMap.get(botId) || 0;
     let currentModelIdx = 0;
     let attempts = 0;
-    const maxTotalAttempts = Math.min(GEMINI_FALLBACK_MODELS.length * Math.max(rawKeys.length, 1) * 2, 8);
+    const maxTotalAttempts = Math.min(activeFallbackModels.length * Math.max(rawKeys.length, 1) * 2, 8);
     const modelsAttempted = new Set<string>();
     const keysAttempted = new Set<string>();
     let lastError: any = null;
     let lastErrorType = 'UNKNOWN';
 
-    while (attempts < maxTotalAttempts && currentModelIdx < GEMINI_FALLBACK_MODELS.length) {
+    while (attempts < maxTotalAttempts && currentModelIdx < activeFallbackModels.length) {
         attempts++;
 
-        const currentModel = GEMINI_FALLBACK_MODELS[currentModelIdx];
+        const currentModel = activeFallbackModels[currentModelIdx];
 
         // Select key that is not in cooldown for currentModel if possible
         let selectedKey = rawKeys[currentKeyIdx % rawKeys.length];
@@ -207,7 +218,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
         // If all keys are in cooldown for currentModel, advance to next model
         if (keyOffset >= rawKeys.length) {
             const nextModelIdx = currentModelIdx + 1;
-            const nextModel = nextModelIdx < GEMINI_FALLBACK_MODELS.length ? GEMINI_FALLBACK_MODELS[nextModelIdx] : null;
+            const nextModel = nextModelIdx < activeFallbackModels.length ? activeFallbackModels[nextModelIdx] : null;
             if (nextModel) {
                 console.log(`[GEMINI_MODEL_FALLBACK] Bot ${botId} | from=${currentModel} | to=${nextModel} | reason=ALL_KEYS_IN_COOLDOWN | attempt=${attempts}`);
                 currentModelIdx = nextModelIdx;
@@ -293,6 +304,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                 success: true,
                 text: outputText,
                 usedModel: currentModel,
+                modelUsed: currentModel,
                 usedKeyMasked: maskedKey,
                 attempts
             };
@@ -341,7 +353,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                 // If no other key available on current model, fallback to NEXT MODEL
                 if (!foundNextKey) {
                     const nextModelIdx = currentModelIdx + 1;
-                    const nextModel = nextModelIdx < GEMINI_FALLBACK_MODELS.length ? GEMINI_FALLBACK_MODELS[nextModelIdx] : null;
+                    const nextModel = nextModelIdx < activeFallbackModels.length ? activeFallbackModels[nextModelIdx] : null;
 
                     if (nextModel) {
                         console.log(`[GEMINI_MODEL_FALLBACK] Bot ${botId} | from=${currentModel} | to=${nextModel} | reason=429_QUOTA | attempt=${attempts}`);
@@ -365,7 +377,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                 console.warn(`[GEMINI_503_HIGH_DEMAND] Bot ${botId} | model=${currentModel} | status=503`);
 
                 const nextModelIdx = currentModelIdx + 1;
-                const nextModel = nextModelIdx < GEMINI_FALLBACK_MODELS.length ? GEMINI_FALLBACK_MODELS[nextModelIdx] : null;
+                const nextModel = nextModelIdx < activeFallbackModels.length ? activeFallbackModels[nextModelIdx] : null;
 
                 if (nextModel) {
                     console.log(`[GEMINI_MODEL_FALLBACK] Bot ${botId} | from=${currentModel} | to=${nextModel} | reason=503 | attempt=${attempts}`);
@@ -403,7 +415,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                 console.error(`[GEMINI_MODEL_NOT_FOUND] Bot ${botId} | model=${currentModel} | status=404`);
 
                 const nextModelIdx = currentModelIdx + 1;
-                const nextModel = nextModelIdx < GEMINI_FALLBACK_MODELS.length ? GEMINI_FALLBACK_MODELS[nextModelIdx] : null;
+                const nextModel = nextModelIdx < activeFallbackModels.length ? activeFallbackModels[nextModelIdx] : null;
 
                 if (nextModel) {
                     console.log(`[GEMINI_MODEL_FALLBACK] Bot ${botId} | from=${currentModel} | to=${nextModel} | reason=404 | attempt=${attempts}`);
@@ -429,7 +441,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
                 lastErrorType = 'EMPTY_RESPONSE';
                 console.warn(`[GEMINI_EMPTY_RESPONSE] Bot ${botId} | model=${currentModel}`);
                 const nextModelIdx = currentModelIdx + 1;
-                if (nextModelIdx < GEMINI_FALLBACK_MODELS.length) {
+                if (nextModelIdx < activeFallbackModels.length) {
                     currentModelIdx = nextModelIdx;
                 } else {
                     currentKeyIdx = (effectiveKeyIndex + 1) % rawKeys.length;
@@ -451,7 +463,7 @@ export async function generateGeminiContent(options: GeminiGenerateOptions): Pro
             }
 
             // Try next model or next key
-            if (currentModelIdx + 1 < GEMINI_FALLBACK_MODELS.length) {
+            if (currentModelIdx + 1 < activeFallbackModels.length) {
                 currentModelIdx++;
             } else {
                 currentKeyIdx = (effectiveKeyIndex + 1) % rawKeys.length;

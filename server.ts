@@ -35,7 +35,7 @@ import { recordAuditLog, fetchAuditLogs } from './src/audit';
 import { handleWhatsAppAdminMessage } from './src/whatsappController';
 import { processGroupModeration, getGroupConfig, getGroupMeta, recordGroupLog, isBotParticipantAdmin, clearGroupMetaCache } from './src/services/groupModeration';
 import { resolveOwnWhatsAppIdentity, isSelfIdentity, findBotParticipant, checkIsMentionedOrReply, syncBotGroups } from './src/services/whatsappIdentity';
-import { initBotGroupSchedulers, clearBotSchedulers, scheduleGroupMotivation, sendDailyMotivationToGroup } from './src/services/groupScheduler';
+import { initBotGroupSchedulers, clearBotSchedulers, scheduleGroupMotivation, sendDailyMotivationToGroup, generateDailyMotivation } from './src/services/groupScheduler';
 import { GroupConfig } from './src/types';
 import { 
     getBotGroups, 
@@ -1426,6 +1426,26 @@ app.post('/api/admin/change-password', async (req, res) => {
     }
 });
 
+// Safe public bot metadata for login screen
+app.get('/api/bot/:id/public', async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
+        if (!botDoc.exists()) {
+            return res.status(404).json({ error: "Bot não encontrado" });
+        }
+        const botData = botDoc.data();
+        res.json({
+            id: botId,
+            name: botData.name || 'Assistente TechStar',
+            firstAccessRequired: !botData.pinHash || !botData.firstAccessCompleted
+        });
+    } catch (e: any) {
+        console.error("Erro ao buscar dados públicos do bot:", e);
+        res.status(500).json({ error: "Erro ao consultar bot" });
+    }
+});
+
 app.post('/api/bot/:id/login', async (req, res) => {
     try {
         const botId = req.params.id;
@@ -1879,16 +1899,17 @@ app.get('/api/bot/:id/config', requireBotAuth, async (req, res) => {
         const status = connectionStatuses.get(req.params.id) || "Desconectado";
         const qr = qrCodes.get(req.params.id) || null;
 
+        const safeBot = sanitizeBotForClient(bot, status, qr);
+
         if (authRole === 'ADMIN') {
             return res.send({
-                ...bot,
-                status,
-                qr
+                ...safeBot,
+                accessToken: bot.accessToken,
+                isAdmin: true
             });
         }
 
         // Return sanitized bot config for owner/client (Gemini secret keys stripped!)
-        const safeBot = sanitizeBotForClient(bot, status, qr);
         res.send(safeBot);
     } catch (e) {
         console.error("Erro ao buscar config:", e);
@@ -2023,6 +2044,16 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
             newValue: savedBotData
         });
 
+        // Immediately update runtime scheduler if motivation settings changed
+        if (changedKeys.some(k => k.startsWith('dailyMotivation'))) {
+            initBotGroupSchedulers({
+                botId: req.params.id,
+                getActiveSock: (id) => activeSocks.get(id),
+                firestoreDb,
+                geminiKeys: savedBotData.geminiKeys
+            }).catch(err => console.error(`[Bot ${req.params.id}] Erro ao atualizar agendamentos:`, err));
+        }
+
         res.send({ status: "Configuração salva e confirmada no Firestore!", config: savedBotData });
     } catch (e: any) {
         console.error("Erro ao salvar config:", e);
@@ -2035,6 +2066,170 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
             stack: e.stack
         });
         res.status(500).send({ error: "Erro ao salvar config: " + e.message });
+    }
+});
+
+// Endpoint dedicado para configuração de IA (Gemini) e proteção multitenant
+app.put(['/api/bots/:id/ai', '/api/bot/:id/ai'], requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+        const botRef = doc(firestoreDb, 'bots', botId);
+
+        const updatePayload: any = {};
+        const { geminiKeys, aiEnabled, aiModel, systemPrompt, analysisEnabled, analysisInstructions, removeGeminiKeys } = req.body;
+
+        if (aiEnabled !== undefined) updatePayload.aiEnabled = !!aiEnabled;
+        if (aiModel !== undefined) updatePayload.aiModel = String(aiModel);
+        if (systemPrompt !== undefined) updatePayload.systemPrompt = String(systemPrompt);
+        if (analysisEnabled !== undefined) updatePayload.analysisEnabled = analysisEnabled ? 1 : 0;
+        if (analysisInstructions !== undefined) updatePayload.analysisInstructions = String(analysisInstructions);
+
+        if (removeGeminiKeys) {
+            updatePayload.geminiKeys = "";
+        } else if (typeof geminiKeys === 'string' && geminiKeys.trim().length > 0) {
+            updatePayload.geminiKeys = geminiKeys.trim();
+        }
+
+        await updateDoc(botRef, updatePayload);
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            actorRole: authRole,
+            action: 'AI_SETTINGS_UPDATED',
+            result: 'SUCCESS',
+            details: `Configurações de IA salvas com sucesso: ${Object.keys(updatePayload).join(', ')}`
+        });
+
+        const hasCustomKeys = removeGeminiKeys ? false : (!!updatePayload.geminiKeys || (!!currentBot.geminiKeys && geminiKeys === undefined));
+
+        res.json({
+            success: true,
+            status: "Configurações de IA salvas com sucesso!",
+            hasGeminiKeys: hasCustomKeys
+        });
+    } catch (e: any) {
+        console.error("Erro ao salvar configurações de IA:", e);
+        res.status(500).json({ error: "Erro ao salvar IA: " + e.message });
+    }
+});
+
+// Endpoint para testar chave de API Gemini sem persistir chave inválida
+app.post(['/api/bots/:id/ai/test', '/api/bot/:id/ai/test'], requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const { testKey, model } = req.body;
+
+        const keyToTest = (typeof testKey === 'string' && testKey.trim()) ? testKey.trim() : currentBot.geminiKeys;
+        const modelToTest = model || currentBot.aiModel || 'gemini-2.5-flash';
+
+        const startTime = Date.now();
+        const result = await generateGeminiContent({
+            botId,
+            geminiKeysStr: keyToTest,
+            model: modelToTest,
+            prompt: "Responda apenas com a palavra: OK"
+        });
+
+        const duration = Date.now() - startTime;
+
+        if (result.success && result.text) {
+            await recordAuditLog(firestoreDb, {
+                botId,
+                role: (req as any).authRole,
+                actorRole: (req as any).authRole,
+                action: 'AI_KEY_TESTED',
+                result: 'SUCCESS',
+                duration,
+                details: `Teste de chave Gemini bem-sucedido com modelo ${result.modelUsed}`
+            });
+
+            return res.json({
+                success: true,
+                message: "Conexão com a API Gemini estabelecida com sucesso!",
+                modelUsed: result.modelUsed,
+                durationMs: duration
+            });
+        } else {
+            await recordAuditLog(firestoreDb, {
+                botId,
+                role: (req as any).authRole,
+                actorRole: (req as any).authRole,
+                action: 'AI_KEY_TESTED',
+                result: 'ERROR',
+                duration,
+                details: `Falha no teste da chave Gemini: ${result.error}`
+            });
+
+            return res.status(400).json({
+                success: false,
+                error: result.error || "A chave Gemini fornecida não respondeu adequadamente."
+            });
+        }
+    } catch (e: any) {
+        console.error("Erro ao testar chave Gemini:", e);
+        res.status(500).json({ error: "Falha técnica ao testar chave: " + e.message });
+    }
+});
+
+// Endpoint para teste de envio real de motivação diária
+app.post(['/api/bots/:id/test-motivation', '/api/bot/:id/test-motivation'], requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const sock = activeSocks.get(botId);
+
+        const quote = await generateDailyMotivation(
+            currentBot.dailyMotivationTopic,
+            currentBot.geminiKeys,
+            currentBot.language || 'pt'
+        );
+
+        const title = (currentBot.dailyMotivationTitle || '').trim() || 'Mensagem do Dia';
+        const useEmoji = currentBot.dailyMotivationUseEmoji !== false;
+        const formattedMessage = useEmoji 
+            ? `☀️ *${title}*\n\n🚀 "${quote}"\n\n✨ Tenham todos um excelente dia de produtividade e conquistas!`
+            : `*${title}*\n\n"${quote}"\n\nTenham todos um excelente dia de produtividade e conquistas.`;
+
+        let sentToWhatsApp = false;
+        let recipient = '';
+
+        if (sock && currentBot.ownerPhone) {
+            try {
+                const targetJid = `${currentBot.ownerPhone}@s.whatsapp.net`;
+                await sock.sendMessage(targetJid, { text: formattedMessage });
+                sentToWhatsApp = true;
+                recipient = targetJid;
+            } catch (sendErr) {
+                console.warn('[TestMotivation] Erro ao despachar mensagem no WhatsApp do proprietário:', sendErr);
+            }
+        }
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: (req as any).authRole,
+            actorRole: (req as any).authRole,
+            action: 'TEST_MOTIVATION_SENT',
+            result: 'SUCCESS',
+            details: `Mensagem motivacional de teste gerada: "${quote.substring(0, 60)}..." | Enviada WhatsApp: ${sentToWhatsApp}`
+        });
+
+        res.json({
+            success: true,
+            status: sentToWhatsApp 
+                ? `Mensagem gerada e enviada com sucesso para o WhatsApp do proprietário!` 
+                : (sock ? `Mensagem motivacional gerada com sucesso!` : `Mensagem gerada com sucesso! (WhatsApp desconectado, não enviada para aparelho)`),
+            quote,
+            formattedMessage,
+            sentToWhatsApp,
+            recipient
+        });
+    } catch (e: any) {
+        console.error("Erro no teste de motivação:", e);
+        res.status(500).json({ error: "Erro ao testar mensagem motivacional: " + e.message });
     }
 });
 

@@ -148,7 +148,7 @@ const AppContent: React.FC = () => {
     setCurrentView(view);
     if (view === 'manage' && bot) {
       setSelectedBot(bot);
-      window.history.pushState({}, '', `/bot/${bot.id}`);
+      window.history.pushState({}, '', `/manage/${bot.id}`);
     } else if (view === 'bots') {
       window.history.pushState({}, '', '/admin');
     } else if (view === 'dashboard') {

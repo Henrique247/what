@@ -151,6 +151,66 @@ class ApiService {
   }
 
   // ==========================================
+  // Dedicated AI & Motivation Real API Methods
+  // ==========================================
+
+  async updateAiSettings(
+    botId: string, 
+    aiConfig: { geminiKeys?: string; aiEnabled?: boolean; aiModel?: string; systemPrompt?: string; removeGeminiKeys?: boolean }, 
+    token?: string, 
+    isAdmin: boolean = true
+  ): Promise<{ success: boolean; status: string; hasGeminiKeys: boolean }> {
+    const url = token ? `/api/bots/${botId}/ai?token=${encodeURIComponent(token)}` : `/api/bots/${botId}/ai`;
+    const res = await fetch(url, {
+      method: 'PUT',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify(aiConfig)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao atualizar configurações de IA');
+    }
+    return res.json();
+  }
+
+  async testGeminiKey(
+    botId: string, 
+    testKey?: string, 
+    model?: string, 
+    token?: string, 
+    isAdmin: boolean = true
+  ): Promise<{ success: boolean; message: string; modelUsed: string; durationMs: number }> {
+    const url = token ? `/api/bots/${botId}/ai/test?token=${encodeURIComponent(token)}` : `/api/bots/${botId}/ai/test`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify({ testKey, model })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao testar chave Gemini');
+    }
+    return data;
+  }
+
+  async testBotMotivation(
+    botId: string, 
+    token?: string, 
+    isAdmin: boolean = true
+  ): Promise<{ success: boolean; status: string; quote: string; formattedMessage: string; sentToWhatsApp: boolean }> {
+    const url = token ? `/api/bots/${botId}/test-motivation?token=${encodeURIComponent(token)}` : `/api/bots/${botId}/test-motivation`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao testar mensagem motivacional');
+    }
+    return data;
+  }
+
+  // ==========================================
   // Group Control & Automation API Methods
   // ==========================================
 

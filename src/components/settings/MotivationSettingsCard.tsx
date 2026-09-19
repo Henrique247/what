@@ -4,10 +4,14 @@ import { Bot } from '../../types';
 import { Toggle } from '../ui/Toggle';
 import { Button } from '../ui/Button';
 import { useToast } from '../ui/Toast';
+import { api } from '../../services/api';
 
 interface MotivationSettingsCardProps {
   formData: Partial<Bot>;
   onChange: (key: keyof Bot, value: any) => void;
+  botId?: string;
+  clientToken?: string;
+  isAdminMode?: boolean;
 }
 
 const WEEK_DAYS = [
@@ -23,6 +27,9 @@ const WEEK_DAYS = [
 export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
   formData,
   onChange,
+  botId,
+  clientToken,
+  isAdminMode = false,
 }) => {
   const toast = useToast();
   const [testingSend, setTestingSend] = useState(false);
@@ -39,12 +46,20 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
     onChange('dailyMotivationDays', next);
   };
 
-  const handleTestSend = () => {
-    setTestingSend(true);
-    setTimeout(() => {
+  const handleTestSend = async () => {
+    if (!botId) {
+      toast.error('Identificador do bot não encontrado');
+      return;
+    }
+    try {
+      setTestingSend(true);
+      const res = await api.testBotMotivation(botId, clientToken, isAdminMode);
+      toast.success(res.status || 'Mensagem motivacional gerada e despachada com sucesso!');
+    } catch (err: any) {
+      toast.error(err.message || 'Falha ao testar mensagem motivacional');
+    } finally {
       setTestingSend(false);
-      toast.success('Disparo de teste simulado com sucesso nos canais configurados!');
-    }, 1200);
+    }
   };
 
   return (
