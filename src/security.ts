@@ -171,11 +171,12 @@ export function hasPermission(bot: any, permission: string): boolean {
  */
 export function sanitizeBotForClient(bot: any, status?: string, qr?: string | null) {
     if (!bot) return null;
-    const { geminiKeys, ...safeBot } = bot;
+    const { geminiKeys, pinHash, ...safeBot } = bot;
     return {
         ...safeBot,
         hasGeminiKeys: !!geminiKeys && geminiKeys.trim().length > 0,
         geminiKeysConfigured: !!geminiKeys && geminiKeys.trim().length > 0,
+        pinConfigured: !!pinHash,
         status: status || "Desconectado",
         qr: qr || null
     };

@@ -518,6 +518,21 @@ async function startBot(botId: string) {
                     reconnectTimers.delete(botId);
                 }
 
+                // Sincroniza identificação real do número/LID conectado e atualiza bot
+                const connectedJid = sock.user?.id || '';
+                const connectedLid = (sock.user as any)?.lid || '';
+                const connectedPhone = normalizePhone(connectedJid);
+                try {
+                    await updateDoc(doc(firestoreDb, 'bots', botId), {
+                        connectedPhone: connectedPhone || null,
+                        connectedJid: connectedJid || null,
+                        connectedLid: connectedLid || null,
+                        lastConnectedAt: new Date().toISOString()
+                    });
+                } catch (e) {
+                    console.error(`[Bot ${botId}] Erro ao atualizar detalhes de conexão:`, e);
+                }
+
                 // Sincronização automática e precisa dos grupos onde o bot participa/é admin
                 syncBotGroups(botId, sock, firestoreDb, bot).catch(err => 
                     console.error(`[Bot ${botId}] Erro ao sincronizar grupos na conexão:`, err)
@@ -1515,6 +1530,56 @@ app.post('/api/bot/:id/set-first-pin', async (req, res) => {
     }
 });
 
+app.post('/api/bot/:id/change-pin', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+        const { newPin, confirmPin } = req.body;
+
+        if (!newPin || !confirmPin) {
+            return res.status(400).json({ error: "Novo PIN e confirmação são obrigatórios." });
+        }
+        if (newPin !== confirmPin) {
+            return res.status(400).json({ error: "Os PINs digitados não coincidem." });
+        }
+        if (typeof newPin !== 'string' || newPin.length < 6) {
+            return res.status(400).json({ error: "O novo PIN deve possuir no mínimo 6 dígitos numéricos." });
+        }
+        if (isWeakPin(newPin)) {
+            return res.status(400).json({ error: "O PIN escolhido é muito fraco ou óbvio (ex: sequências ou dígitos repetidos). Escolha um PIN seguro de pelo menos 6 dígitos." });
+        }
+
+        const botRef = doc(firestoreDb, 'bots', botId);
+        const pinHash = hashSecret(newPin);
+        const newAccessToken = generateSecureToken();
+
+        await updateDoc(botRef, {
+            pinHash,
+            accessToken: newAccessToken,
+            firstAccessCompleted: true
+        });
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            actorRole: authRole,
+            action: 'PIN_CHANGED',
+            result: 'SUCCESS',
+            details: 'PIN do proprietário alterado com sucesso e sessões anteriores invalidadas'
+        });
+
+        res.json({
+            success: true,
+            accessToken: newAccessToken,
+            message: "PIN alterado com sucesso! Sessões anteriores invalidadas."
+        });
+    } catch (e: any) {
+        console.error("Erro ao alterar PIN do bot:", e);
+        res.status(500).json({ error: "Erro ao alterar PIN: " + e.message });
+    }
+});
+
 app.post('/api/bot/:id/forgot-pin', async (req, res) => {
     try {
         const botId = req.params.id;
@@ -1865,6 +1930,8 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
         const updatePayload: any = {};
 
         if (name !== undefined) updatePayload.name = name;
+        if (req.body.description !== undefined) updatePayload.description = req.body.description;
+        if (req.body.avatarUrl !== undefined) updatePayload.avatarUrl = req.body.avatarUrl;
         if (systemPrompt !== undefined) updatePayload.systemPrompt = systemPrompt;
         if (welcomeMsg !== undefined) updatePayload.welcomeMsg = welcomeMsg;
         if (exitMsg !== undefined) updatePayload.exitMsg = exitMsg;
@@ -1872,6 +1939,7 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
         if (ownerName !== undefined) updatePayload.ownerName = ownerName;
         if (req.body.ownerLid !== undefined) updatePayload.ownerLid = req.body.ownerLid;
         if (req.body.ownerJid !== undefined) updatePayload.ownerJid = req.body.ownerJid;
+        if (req.body.ownerVerificationStatus !== undefined) updatePayload.ownerVerificationStatus = req.body.ownerVerificationStatus;
         if (ownerNumber !== undefined) {
             updatePayload.ownerNumber = ownerNumber;
             updatePayload.ownerPhone = normalizePhone(ownerNumber);
@@ -1887,6 +1955,27 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
         if (memoryEnabled !== undefined) updatePayload.memoryEnabled = memoryEnabled ? 1 : 0;
         if (analysisEnabled !== undefined) updatePayload.analysisEnabled = analysisEnabled ? 1 : 0;
         if (analysisInstructions !== undefined) updatePayload.analysisInstructions = analysisInstructions;
+
+        // New SaaS Settings Fields
+        if (req.body.aiEnabled !== undefined) updatePayload.aiEnabled = !!req.body.aiEnabled;
+        if (req.body.aiModel !== undefined) updatePayload.aiModel = req.body.aiModel;
+        if (req.body.respondOnlyOnMentionOrReply !== undefined) updatePayload.respondOnlyOnMentionOrReply = !!req.body.respondOnlyOnMentionOrReply;
+        if (req.body.responseCooldownSeconds !== undefined) updatePayload.responseCooldownSeconds = Number(req.body.responseCooldownSeconds);
+        if (req.body.antiLinkEnabled !== undefined) updatePayload.antiLinkEnabled = !!req.body.antiLinkEnabled;
+        if (req.body.antiBadWordsEnabled !== undefined) updatePayload.antiBadWordsEnabled = !!req.body.antiBadWordsEnabled;
+        if (req.body.badWords !== undefined) updatePayload.badWords = req.body.badWords;
+        if (req.body.antiSpamEnabled !== undefined) updatePayload.antiSpamEnabled = !!req.body.antiSpamEnabled;
+        if (req.body.adminImmunity !== undefined) updatePayload.adminImmunity = !!req.body.adminImmunity;
+        if (req.body.moderationAction !== undefined) updatePayload.moderationAction = req.body.moderationAction;
+        if (req.body.dailyMotivationEnabled !== undefined) updatePayload.dailyMotivationEnabled = !!req.body.dailyMotivationEnabled;
+        if (req.body.dailyMotivationTitle !== undefined) updatePayload.dailyMotivationTitle = req.body.dailyMotivationTitle;
+        if (req.body.dailyMotivationUseEmoji !== undefined) updatePayload.dailyMotivationUseEmoji = !!req.body.dailyMotivationUseEmoji;
+        if (req.body.dailyMotivationMode !== undefined) updatePayload.dailyMotivationMode = req.body.dailyMotivationMode;
+        if (req.body.dailyMotivationFixedText !== undefined) updatePayload.dailyMotivationFixedText = req.body.dailyMotivationFixedText;
+        if (req.body.dailyMotivationDays !== undefined) updatePayload.dailyMotivationDays = req.body.dailyMotivationDays;
+        if (req.body.dailyMotivationTime !== undefined) updatePayload.dailyMotivationTime = req.body.dailyMotivationTime;
+        if (req.body.dailyMotivationTimezone !== undefined) updatePayload.dailyMotivationTimezone = req.body.dailyMotivationTimezone || 'Africa/Luanda';
+        if (req.body.dailyMotivationTopic !== undefined) updatePayload.dailyMotivationTopic = req.body.dailyMotivationTopic;
 
         // If admin provides geminiKeys, update it. If client/owner, preserve server-stored keys!
         if (authRole === 'ADMIN' && typeof geminiKeys === 'string') {
@@ -1911,14 +2000,25 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
         }
         const savedBotData = verifySnap.data();
 
+        // Categorize audit action
+        const changedKeys = Object.keys(updatePayload);
+        let auditAction = 'CONFIG_UPDATED';
+        if (changedKeys.includes('name') && changedKeys.length === 1) auditAction = 'BOT_NAME_UPDATED';
+        else if ((changedKeys.includes('ownerName') || changedKeys.includes('ownerNumber') || changedKeys.includes('ownerLid')) && changedKeys.length <= 4) auditAction = 'OWNER_UPDATED';
+        else if (changedKeys.some(k => ['systemPrompt', 'aiEnabled', 'aiModel', 'analysisEnabled'].includes(k))) auditAction = 'AI_SETTINGS_UPDATED';
+        else if (changedKeys.some(k => ['respondInPrivate', 'privateWelcomeEnabled', 'welcomeMsg', 'exitMsg'].includes(k))) auditAction = 'PRIVATE_SETTINGS_UPDATED';
+        else if (changedKeys.some(k => ['respondInGroups', 'groupWelcomeEnabled', 'groupExitEnabled', 'respondOnlyOnMentionOrReply'].includes(k))) auditAction = 'GROUP_SETTINGS_UPDATED';
+        else if (changedKeys.some(k => ['antiLinkEnabled', 'antiBadWordsEnabled', 'antiSpamEnabled', 'adminImmunity', 'moderationAction'].includes(k))) auditAction = 'MODERATION_SETTINGS_UPDATED';
+        else if (changedKeys.some(k => ['dailyMotivationEnabled', 'dailyMotivationTitle', 'dailyMotivationMode'].includes(k))) auditAction = 'MOTIVATION_SETTINGS_UPDATED';
+
         await recordAuditLog(firestoreDb, {
             botId: req.params.id,
             role: authRole,
             actorRole: authRole,
-            action: 'CONFIG_UPDATED',
+            action: auditAction,
             result: 'SUCCESS',
-            details: 'Configurações do bot atualizadas, confirmadas e persistidas no Firestore',
-            fieldsChanged: Object.keys(updatePayload),
+            details: `Configurações do bot atualizadas com sucesso: ${changedKeys.join(', ')}`,
+            fieldsChanged: changedKeys,
             oldValue: currentBot,
             newValue: savedBotData
         });
@@ -1935,6 +2035,179 @@ app.post('/api/bot/:id/config', requireBotAuth, async (req, res) => {
             stack: e.stack
         });
         res.status(500).send({ error: "Erro ao salvar config: " + e.message });
+    }
+});
+
+// Disconnect WhatsApp endpoint
+app.post('/api/bot/:id/disconnect', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.WHATSAPP_MANAGE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para desconectar o WhatsApp.' });
+        }
+
+        if (reconnectTimers.has(botId)) {
+            clearTimeout(reconnectTimers.get(botId));
+            reconnectTimers.delete(botId);
+        }
+        botReconnectAttempts.delete(botId);
+
+        if (activeSocks.has(botId)) {
+            try {
+                const sock = activeSocks.get(botId);
+                sock.ev.removeAllListeners('connection.update');
+                sock.end(undefined);
+            } catch (e) {}
+            activeSocks.delete(botId);
+            registerActiveSock(botId, null);
+        }
+
+        connectionStatuses.set(botId, "Desconectado");
+        qrCodes.delete(botId);
+        startingBots.delete(botId);
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            actorRole: authRole,
+            action: 'WHATSAPP_DISCONNECTED',
+            result: 'SUCCESS',
+            details: 'WhatsApp desconectado pelo painel'
+        });
+
+        res.json({ success: true, status: "Desconectado", message: "Bot desconectado com sucesso." });
+    } catch (e: any) {
+        console.error("Erro ao desconectar bot:", e);
+        res.status(500).json({ error: "Erro ao desconectar bot: " + e.message });
+    }
+});
+
+// Reconnect WhatsApp endpoint
+app.post('/api/bot/:id/reconnect', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.WHATSAPP_MANAGE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para reconectar o WhatsApp.' });
+        }
+
+        startingBots.delete(botId);
+        await startBot(botId);
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            actorRole: authRole,
+            action: 'WHATSAPP_RECONNECT',
+            result: 'SUCCESS',
+            details: 'Reconexão iniciada pelo painel'
+        });
+
+        res.json({ success: true, message: "Reconexão iniciada com sucesso!" });
+    } catch (e: any) {
+        console.error("Erro ao reconectar bot:", e);
+        res.status(500).json({ error: "Erro ao reconectar: " + e.message });
+    }
+});
+
+// Reset Configuration endpoint
+app.post('/api/bot/:id/reset-config', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.BOT_CONFIG_UPDATE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para restaurar configurações padrão.' });
+        }
+
+        const resetData = {
+            systemPrompt: "Você é um assistente útil e cordial.",
+            welcomeMsg: "Olá! Como posso ajudar você hoje?",
+            exitMsg: "Até logo!",
+            respondInGroups: 1,
+            respondInPrivate: 1,
+            memoryEnabled: 1,
+            analysisEnabled: 0,
+            privateWelcomeEnabled: 0,
+            privateExitEnabled: 0,
+            groupWelcomeEnabled: 0,
+            groupExitEnabled: 0,
+            antiLinkEnabled: false,
+            antiBadWordsEnabled: false,
+            antiSpamEnabled: false,
+            dailyMotivationEnabled: false
+        };
+
+        const botRef = doc(firestoreDb, 'bots', botId);
+        await updateDoc(botRef, resetData);
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            actorRole: authRole,
+            action: 'CONFIG_RESET',
+            result: 'SUCCESS',
+            details: 'Configurações do bot restauradas para os padrões'
+        });
+
+        res.json({ success: true, message: "Configurações restauradas com sucesso!" });
+    } catch (e: any) {
+        res.status(500).json({ error: "Erro ao resetar configurações: " + e.message });
+    }
+});
+
+// Delete bot endpoint (Protected)
+app.delete('/api/bot/:id', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.BOT_DELETE)) {
+            return res.status(403).json({ error: 'Apenas administradores possuem permissão para excluir bots.' });
+        }
+
+        if (reconnectTimers.has(botId)) {
+            clearTimeout(reconnectTimers.get(botId));
+            reconnectTimers.delete(botId);
+        }
+        botReconnectAttempts.delete(botId);
+
+        if (activeSocks.has(botId)) {
+            try {
+                const sock = activeSocks.get(botId);
+                sock.ev.removeAllListeners('connection.update');
+                sock.end(undefined);
+            } catch(e) {}
+            activeSocks.delete(botId);
+            registerActiveSock(botId, null);
+        }
+
+        const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
+        if (fs.existsSync(authPath)) {
+            try { fs.rmSync(authPath, { recursive: true, force: true }); } catch {}
+        }
+
+        await deleteDoc(doc(firestoreDb, 'bots', botId));
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            actorRole: authRole,
+            action: 'BOT_DELETED',
+            result: 'SUCCESS',
+            details: `Bot ${botId} excluído com sucesso`
+        });
+
+        res.json({ success: true, message: "Bot excluído com sucesso." });
+    } catch (e: any) {
+        res.status(500).json({ error: "Erro ao excluir bot: " + e.message });
     }
 });
 

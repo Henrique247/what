@@ -32,6 +32,40 @@ export interface Bot {
   firstAccessCompleted?: boolean;
   qr?: string | null;
   hasQR?: boolean;
+  description?: string;
+  avatarUrl?: string;
+  ownerLid?: string;
+  ownerJid?: string;
+  ownerVerificationStatus?: 'VERIFIED' | 'PENDING' | 'UNVERIFIED';
+  connectedPhone?: string;
+  connectedLid?: string;
+  connectedJid?: string;
+  lastConnectedAt?: string;
+  lastActiveAt?: string;
+  lastMessageReceivedAt?: string;
+  lastMessageSentAt?: string;
+  aiEnabled?: boolean;
+  aiModel?: string;
+  aiState?: string;
+  aiFallbackActive?: boolean;
+  respondOnlyOnMentionOrReply?: boolean;
+  responseCooldownSeconds?: number;
+  antiLinkEnabled?: boolean;
+  antiBadWordsEnabled?: boolean;
+  badWords?: string[];
+  antiSpamEnabled?: boolean;
+  adminImmunity?: boolean;
+  moderationAction?: 'warn' | 'delete' | 'remove';
+  dailyMotivationEnabled?: boolean;
+  dailyMotivationTitle?: string;
+  dailyMotivationUseEmoji?: boolean;
+  dailyMotivationMode?: 'ai' | 'fixed' | 'rotating';
+  dailyMotivationFixedText?: string;
+  dailyMotivationDays?: number[];
+  dailyMotivationTime?: string;
+  dailyMotivationTimezone?: string;
+  dailyMotivationTopic?: string;
+  dailyMotivationQuotes?: string[];
   plan?: 'FREE' | 'STARTER' | 'PRO' | 'BUSINESS';
   planLimits?: {
     maxMessagesPerMonth?: number;
@@ -101,13 +135,17 @@ export type ActiveTab =
   | 'overview'
   | 'whatsapp'
   | 'quick-config'
-  | 'knowledge'
-  | 'memory'
+  | 'private'
   | 'groups'
-  | 'group-control'
+  | 'moderation'
+  | 'memory'
+  | 'knowledge'
+  | 'automation'
+  | 'motivation'
   | 'intelligence'
   | 'stats'
-  | 'logs';
+  | 'logs'
+  | 'settings';
 
 export type ModerationAction = 'delete' | 'warn' | 'remove' | 'delete_and_warn';
 

@@ -27,7 +27,11 @@ import {
   ExternalLink,
   Search,
   CheckCircle2,
-  Users
+  Users,
+  Settings,
+  Shield,
+  SunMedium,
+  Radio
 } from 'lucide-react';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -38,6 +42,10 @@ import { Skeleton } from '../components/ui/Skeleton';
 import { EmptyState } from '../components/ui/EmptyState';
 import { api } from '../services/api';
 import { GroupControlView } from '../components/GroupControlView';
+import { BotSettingsTab } from '../components/settings/BotSettingsTab';
+import { PrivateSettingsCard } from '../components/settings/PrivateSettingsCard';
+import { ModerationSettingsCard } from '../components/settings/ModerationSettingsCard';
+import { MotivationSettingsCard } from '../components/settings/MotivationSettingsCard';
 
 interface BotManagePageProps {
   bot: Bot;
@@ -198,12 +206,15 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
   const tabs: { id: ActiveTab; label: string; icon: React.ReactNode }[] = [
     { id: 'overview', label: 'Visão Geral', icon: <Sliders className="w-4 h-4" /> },
     { id: 'whatsapp', label: 'WhatsApp & QR', icon: <QrCode className="w-4 h-4" /> },
-    { id: 'intelligence', label: 'Inteligência AI', icon: <Sparkles className="w-4 h-4" /> },
-    { id: 'knowledge', label: 'Base de Conhecimento', icon: <BookOpen className="w-4 h-4" /> },
-    { id: 'memory', label: 'Memória de Contexto', icon: <Brain className="w-4 h-4" /> },
-    { id: 'groups', label: 'Controle de Grupos', icon: <Users className="w-4 h-4" /> },
+    { id: 'private', label: 'Privado', icon: <MessageSquare className="w-4 h-4" /> },
+    { id: 'groups', label: 'Grupos', icon: <Users className="w-4 h-4" /> },
+    { id: 'moderation', label: 'Moderação', icon: <Shield className="w-4 h-4" /> },
+    { id: 'memory', label: 'Memória', icon: <Brain className="w-4 h-4" /> },
+    { id: 'knowledge', label: 'Conhecimento', icon: <BookOpen className="w-4 h-4" /> },
+    { id: 'motivation', label: 'Motivação', icon: <SunMedium className="w-4 h-4" /> },
     { id: 'stats', label: 'Estatísticas', icon: <BarChart3 className="w-4 h-4" /> },
     { id: 'logs', label: 'Auditoria', icon: <ShieldAlert className="w-4 h-4" /> },
+    { id: 'settings', label: 'Configurações', icon: <Settings className="w-4 h-4 text-emerald-400" /> },
   ];
 
   return (
@@ -930,6 +941,124 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
                 </table>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* 9. CONFIGURAÇÕES COMPLETAS DO BOT (NOVA ABA SAAS) */}
+      {activeTab === 'settings' && (
+        <BotSettingsTab
+          bot={bot}
+          clientToken={clientToken}
+          isAdminMode={isAdminMode}
+          onUpdateBot={onUpdateBot}
+          onNavigateToTab={onSelectTab}
+          stats={stats}
+        />
+      )}
+
+      {/* 10. CONVERSAS PRIVADAS (1:1) */}
+      {activeTab === 'private' && (
+        <div className="space-y-6">
+          <PrivateSettingsCard
+            formData={formData}
+            onChange={handleChange}
+          />
+          <div className="flex justify-end">
+            <Button
+              variant="primary"
+              size="md"
+              loading={saving}
+              onClick={handleSave}
+              icon={<Save className="w-4 h-4" />}
+            >
+              Salvar Alterações
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* 11. MODERAÇÃO DE CONTEÚDO */}
+      {activeTab === 'moderation' && (
+        <div className="space-y-6">
+          <ModerationSettingsCard
+            formData={formData}
+            onChange={handleChange}
+          />
+          <div className="flex justify-end">
+            <Button
+              variant="primary"
+              size="md"
+              loading={saving}
+              onClick={handleSave}
+              icon={<Save className="w-4 h-4" />}
+            >
+              Salvar Alterações
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* 12. MOTIVAÇÃO E MENSAGENS AUTOMÁTICAS */}
+      {activeTab === 'motivation' && (
+        <div className="space-y-6">
+          <MotivationSettingsCard
+            formData={formData}
+            onChange={handleChange}
+          />
+          <div className="flex justify-end">
+            <Button
+              variant="primary"
+              size="md"
+              loading={saving}
+              onClick={handleSave}
+              icon={<Save className="w-4 h-4" />}
+            >
+              Salvar Alterações
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* 13. AUTOMAÇÃO & DISPAROS */}
+      {activeTab === 'automation' && (
+        <div className="space-y-6">
+          <div className="techstar-card p-6 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                <Radio className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-semibold text-zinc-100">Painel de Automações & Agendamento</h3>
+                <p className="text-xs text-zinc-400">Configure disparos programados, gatilhos por palavras-chave e motivação diária</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
+              <button
+                type="button"
+                onClick={() => onSelectTab('motivation')}
+                className="p-4 rounded-xl bg-[#101418] border border-[#22282F] hover:border-emerald-500/30 text-left transition-all group"
+              >
+                <SunMedium className="w-5 h-5 text-emerald-400 mb-2 group-hover:scale-110 transition-transform" />
+                <h4 className="text-xs font-semibold text-zinc-200">Mensagens Motivacionais Diárias</h4>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  Programar horários, dias da semana e modo (IA ou fixo).
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => onSelectTab('settings')}
+                className="p-4 rounded-xl bg-[#101418] border border-[#22282F] hover:border-emerald-500/30 text-left transition-all group"
+              >
+                <Settings className="w-5 h-5 text-emerald-400 mb-2 group-hover:scale-110 transition-transform" />
+                <h4 className="text-xs font-semibold text-zinc-200">Regras e Configurações Globais</h4>
+                <p className="text-[11px] text-zinc-500 mt-1">
+                  Ajustar prompts, limites de respostas e moderação automática.
+                </p>
+              </button>
+            </div>
           </div>
         </div>
       )}

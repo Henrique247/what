@@ -16,7 +16,13 @@ import {
   ChevronRight,
   ExternalLink,
   Sparkles,
-  Zap
+  Zap,
+  Settings,
+  Shield,
+  SunMedium,
+  Users,
+  Radio,
+  FileText
 } from 'lucide-react';
 import { Bot, ActiveTab } from '../../types';
 
@@ -174,7 +180,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     }`}
                   >
                     <Sliders className="w-4 h-4" />
-                    <span>Visão Geral & Toggles</span>
+                    <span>Visão Geral & Dashboard</span>
                   </button>
 
                   <button
@@ -195,16 +201,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <button
                     onClick={() => {
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
-                      handleTabClick('knowledge');
+                      handleTabClick('private');
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                      currentView === 'manage' && activeBotTab === 'knowledge'
+                      currentView === 'manage' && activeBotTab === 'private'
                         ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                         : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
                     }`}
                   >
-                    <BookOpen className="w-4 h-4" />
-                    <span>Base de Conhecimento</span>
+                    <MessageSquare className="w-4 h-4" />
+                    <span>Conversas (Privado)</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (currentView !== 'manage') onNavigate('manage', selectedBot);
+                      handleTabClick('groups');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                      currentView === 'manage' && activeBotTab === 'groups'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <Users className="w-4 h-4" />
+                    <span>Controle de Grupos</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (currentView !== 'manage') onNavigate('manage', selectedBot);
+                      handleTabClick('moderation');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                      currentView === 'manage' && activeBotTab === 'moderation'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <Shield className="w-4 h-4" />
+                    <span>Moderação de Conteúdo</span>
                   </button>
 
                   <button
@@ -225,16 +261,46 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <button
                     onClick={() => {
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
-                      handleTabClick('groups');
+                      handleTabClick('knowledge');
                     }}
                     className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                      currentView === 'manage' && activeBotTab === 'groups'
+                      currentView === 'manage' && activeBotTab === 'knowledge'
                         ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                         : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
                     }`}
                   >
-                    <MessageSquare className="w-4 h-4" />
-                    <span>Controle de Grupos</span>
+                    <BookOpen className="w-4 h-4" />
+                    <span>Base de Conhecimento</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (currentView !== 'manage') onNavigate('manage', selectedBot);
+                      handleTabClick('automation');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                      currentView === 'manage' && activeBotTab === 'automation'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <Radio className="w-4 h-4" />
+                    <span>Automação & Triggers</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (currentView !== 'manage') onNavigate('manage', selectedBot);
+                      handleTabClick('motivation');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                      currentView === 'manage' && activeBotTab === 'motivation'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <SunMedium className="w-4 h-4" />
+                    <span>Motivação Diária</span>
                   </button>
 
                   <button
@@ -265,6 +331,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   >
                     <ShieldAlert className="w-4 h-4" />
                     <span>Logs de Auditoria</span>
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      if (currentView !== 'manage') onNavigate('manage', selectedBot);
+                      handleTabClick('settings');
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                      currentView === 'manage' && activeBotTab === 'settings'
+                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-xs'
+                        : 'text-zinc-300 hover:text-white hover:bg-[#151A1F]'
+                    }`}
+                  >
+                    <Settings className="w-4 h-4 text-emerald-400" />
+                    <span className="font-semibold text-emerald-300">Configurações</span>
                   </button>
                 </nav>
               </div>

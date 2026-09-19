@@ -279,6 +279,7 @@ const AppContent: React.FC = () => {
           isRefreshing={isRefreshing}
           onOpenCreateModal={() => setCreateWizardOpen(true)}
           isAdminMode={isAdminMode}
+          onSelectBotTab={setActiveBotTab}
         />
 
         {/* Scrollable View Content */}

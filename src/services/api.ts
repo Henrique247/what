@@ -83,7 +83,7 @@ class ApiService {
     return res.json();
   }
 
-  async saveBotConfig(botId: string, config: Partial<Bot>, token?: string, isAdmin: boolean = true): Promise<{ status: string }> {
+  async saveBotConfig(botId: string, config: Partial<Bot>, token?: string, isAdmin: boolean = true): Promise<{ status: string; config?: Bot }> {
     const url = token ? `/api/bot/${botId}/config?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/config`;
     const res = await fetch(url, {
       method: 'POST',
@@ -295,6 +295,72 @@ class ApiService {
       throw new Error(data.error || 'Falha ao executar ação no grupo');
     }
     return res.json();
+  }
+
+  async changeBotPin(botId: string, newPin: string, confirmPin: string, token?: string, isAdmin: boolean = false): Promise<{ success: boolean; message: string; accessToken?: string }> {
+    const url = token ? `/api/bot/${botId}/change-pin?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/change-pin`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify({ newPin, confirmPin })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao alterar o PIN do bot.');
+    }
+    return data;
+  }
+
+  async disconnectWhatsApp(botId: string, token?: string, isAdmin: boolean = false): Promise<{ success: boolean; message: string; status: string }> {
+    const url = token ? `/api/bot/${botId}/disconnect?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/disconnect`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao desconectar o WhatsApp.');
+    }
+    return data;
+  }
+
+  async reconnectWhatsApp(botId: string, token?: string, isAdmin: boolean = false): Promise<{ success: boolean; message: string }> {
+    const url = token ? `/api/bot/${botId}/reconnect?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/reconnect`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao reconectar o WhatsApp.');
+    }
+    return data;
+  }
+
+  async resetBotConfig(botId: string, token?: string, isAdmin: boolean = false): Promise<{ success: boolean; message: string }> {
+    const url = token ? `/api/bot/${botId}/reset-config?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/reset-config`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao resetar configurações.');
+    }
+    return data;
+  }
+
+  async deleteBotInstance(botId: string, token?: string, isAdmin: boolean = false): Promise<{ success: boolean; message: string }> {
+    const url = token ? `/api/bot/${botId}?token=${encodeURIComponent(token)}` : `/api/bot/${botId}`;
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || 'Falha ao excluir o bot.');
+    }
+    return data;
   }
 }
 
