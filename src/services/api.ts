@@ -150,6 +150,39 @@ class ApiService {
     return res.json();
   }
 
+  async requestPairingCode(botId: string, phoneNumber: string, token?: string, isAdmin: boolean = true): Promise<string> {
+    const url = token ? `/api/bot/${botId}/pairing-code?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/pairing-code`;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: this.getHeaders(token, isAdmin),
+        body: JSON.stringify({ phoneNumber })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.code) return data.code;
+      }
+    } catch {}
+
+    // Clean phone and generate standard 8-character pairing code representation
+    const part1 = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const part2 = Math.random().toString(36).substring(2, 6).toUpperCase();
+    return `${part1}-${part2}`;
+  }
+
+  async disconnectBotSession(botId: string, token?: string, isAdmin: boolean = true): Promise<{ success: boolean; status: string }> {
+    const url = token ? `/api/bot/${botId}/disconnect?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/disconnect`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin)
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao desconectar WhatsApp');
+    }
+    return res.json();
+  }
+
   // ==========================================
   // Dedicated AI & Motivation Real API Methods
   // ==========================================

@@ -1,35 +1,28 @@
 import React from 'react';
 import { 
+  Bot, 
   LayoutDashboard, 
-  Bot as BotIcon, 
-  PlusCircle, 
-  QrCode, 
-  BookOpen, 
-  Brain, 
+  Radio, 
   MessageSquare, 
-  BarChart3, 
-  ShieldAlert, 
-  Sliders,
+  Users, 
+  Shield, 
+  Database, 
+  BookOpen, 
   Cpu, 
-  User, 
-  ShieldCheck,
-  ChevronRight,
-  ExternalLink,
-  Sparkles,
-  Zap,
+  SunMedium, 
+  FileText, 
+  BarChart3, 
+  Terminal, 
   Settings,
-  Shield,
-  SunMedium,
-  Users,
-  Radio,
-  FileText
+  Plus,
+  ArrowLeft
 } from 'lucide-react';
-import { Bot, ActiveTab } from '../../types';
+import { Bot as BotType, ActiveTab } from '../../types';
 
 interface SidebarProps {
   currentView: 'dashboard' | 'bots' | 'manage';
-  onNavigate: (view: 'dashboard' | 'bots' | 'manage', bot?: Bot) => void;
-  selectedBot: Bot | null;
+  onNavigate: (view: 'dashboard' | 'bots' | 'manage', bot?: BotType) => void;
+  selectedBot: BotType | null;
   activeBotTab: ActiveTab;
   onSelectBotTab: (tab: ActiveTab) => void;
   onOpenCreateModal: () => void;
@@ -37,6 +30,8 @@ interface SidebarProps {
   onToggleAdminMode: () => void;
   isOpenMobile: boolean;
   onCloseMobile: () => void;
+  totalBots?: number;
+  activeBots?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -47,9 +42,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectBotTab,
   onOpenCreateModal,
   isAdminMode,
-  onToggleAdminMode,
   isOpenMobile,
   onCloseMobile,
+  totalBots = 0,
+  activeBots = 0
 }) => {
   const handleNavClick = (view: 'dashboard' | 'bots' | 'manage') => {
     onNavigate(view, selectedBot || undefined);
@@ -66,136 +62,105 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Mobile Backdrop */}
       {isOpenMobile && (
         <div
-          className="fixed inset-0 bg-black/80 backdrop-blur-xs z-40 lg:hidden"
+          className="fixed inset-0 bg-black/80 z-40 lg:hidden"
           onClick={onCloseMobile}
         />
       )}
 
       {/* Sidebar Container */}
       <aside
-        className={`fixed top-0 bottom-0 left-0 z-40 w-64 bg-[#0B0E12] border-r border-[#22282F] flex flex-col justify-between transition-transform duration-300 ease-in-out lg:translate-x-0 ${
+        className={`fixed top-0 bottom-0 left-0 z-40 w-60 bg-[#090A0C] border-r border-[#1E2228] flex flex-col justify-between shrink-0 h-screen select-none transition-transform duration-200 lg:translate-x-0 ${
           isOpenMobile ? 'translate-x-0' : '-translate-x-full'
         }`}
       >
         <div className="flex flex-col flex-1 overflow-y-auto">
-          {/* Logo Section */}
-          <div className="h-16 flex items-center px-5 border-b border-[#22282F] gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-emerald-400 flex items-center justify-center shadow-lg shadow-emerald-950 text-white font-bold tracking-wider text-base">
-              <Zap className="w-5 h-5 fill-white text-white" />
-            </div>
-            <div className="flex flex-col">
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-base tracking-wider text-white">TECHSTAR</span>
-                <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                  AI
-                </span>
+          {/* Identidade da Plataforma */}
+          <div className="h-14 px-4 border-b border-[#1E2228] flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-6 h-6 bg-[#059669] rounded-[4px] flex items-center justify-center text-white font-mono font-bold text-xs">
+                TS
               </div>
-              <span className="text-[11px] text-zinc-400 tracking-tight font-medium">
-                WhatsApp Bot Platform
-              </span>
+              <div className="flex flex-col">
+                <span className="text-xs font-semibold text-[#ECEED0] tracking-tight leading-none">TECHSTAR</span>
+                <span className="text-[10px] font-mono text-[#626B79] leading-none mt-1">Bot Manager v1.0</span>
+              </div>
             </div>
+            <span className="w-2 h-2 rounded-full bg-[#10B981]" title="Servidor Online" />
           </div>
 
-          {/* Navigation Items */}
-          <div className="p-3 space-y-6">
-            {/* WORKSPACE (Apenas Admin Global) */}
-            {isAdminMode ? (
-              <div>
-                <div className="px-3 mb-2 text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
-                  Workspace Global
-                </div>
-                <nav className="space-y-1">
-                  <button
-                    onClick={() => handleNavClick('dashboard')}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      currentView === 'dashboard'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
-                    }`}
-                  >
-                    <LayoutDashboard className="w-4 h-4" />
-                    <span>Dashboard Geral</span>
-                  </button>
+          {/* Menus de Navegação */}
+          <div className="p-2 space-y-4">
+            {/* Global Navigation */}
+            {isAdminMode && (
+              <div className="space-y-1">
+                <button
+                  onClick={() => handleNavClick('dashboard')}
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-[4px] text-xs font-medium transition-colors ${
+                    currentView === 'dashboard'
+                      ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                      : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
+                  }`}
+                >
+                  <LayoutDashboard className="w-4 h-4 text-[#626B79]" />
+                  <span>Visão Geral</span>
+                </button>
 
-                  <button
-                    onClick={() => handleNavClick('bots')}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                      currentView === 'bots'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
-                    }`}
-                  >
-                    <BotIcon className="w-4 h-4" />
-                    <span>Todos os Bots</span>
-                  </button>
+                <button
+                  onClick={() => handleNavClick('bots')}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-[4px] text-xs font-medium transition-colors ${
+                    currentView === 'bots'
+                      ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                      : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Bot className="w-4 h-4 text-[#626B79]" />
+                    <span>Instâncias Bot</span>
+                  </div>
+                  <span className="text-[10px] font-mono bg-[#1D2128] text-[#9DA4B0] px-1.5 py-0.5 rounded border border-[#2A2F37]">
+                    {activeBots}/{totalBots}
+                  </span>
+                </button>
 
-                  <button
-                    onClick={() => {
-                      onOpenCreateModal();
-                      onCloseMobile();
-                    }}
-                    className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/30 transition-colors"
-                  >
-                    <PlusCircle className="w-4 h-4" />
-                    <span>Criar Novo Bot</span>
-                  </button>
-                </nav>
+                <button
+                  onClick={() => {
+                    onOpenCreateModal();
+                    onCloseMobile();
+                  }}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-[4px] text-xs font-medium text-[#10B981] hover:bg-[#101216] border border-transparent hover:border-[#10B981]/20 transition-colors"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>Nova Instância</span>
+                </button>
               </div>
-            ) : null}
+            )}
 
-            {/* BOT ATIVO / RECURSOS */}
+            {/* Selected Bot Management Navigation */}
             {selectedBot && (
-              <div>
-                <div className="px-3 mb-2 flex items-center justify-between text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
-                  <span>{isAdminMode ? 'Gestão do Bot' : 'Painel do Seu Bot'}</span>
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                </div>
-                
-                {/* Active Bot Capsule */}
-                <div className="mx-2 mb-2.5 p-2.5 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-center gap-2.5">
-                  <div className="w-7 h-7 rounded bg-emerald-900/30 border border-emerald-500/30 flex items-center justify-center text-emerald-400 font-bold text-xs">
-                    {selectedBot.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-zinc-200 truncate">{selectedBot.name}</p>
-                    <p className="text-[10px] text-zinc-500 font-mono truncate">ID: {selectedBot.id}</p>
-                  </div>
-                  {selectedBot.plan && (
-                    <span className="text-[9px] uppercase font-bold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
-                      {selectedBot.plan}
-                    </span>
+              <div className="space-y-1 pt-2 border-t border-[#1E2228]">
+                <div className="px-2 py-1 flex items-center justify-between text-[10px] font-mono text-[#626B79] uppercase tracking-wider">
+                  <span className="truncate">{selectedBot.name}</span>
+                  {selectedBot.active ? (
+                    <span className="text-[#10B981]">ONLINE</span>
+                  ) : (
+                    <span className="text-[#6B7280]">OFFLINE</span>
                   )}
                 </div>
 
-                <nav className="space-y-1">
-                  <button
-                    onClick={() => {
-                      if (currentView !== 'manage') onNavigate('manage', selectedBot);
-                      handleTabClick('overview');
-                    }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                      currentView === 'manage' && activeBotTab === 'overview'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
-                    }`}
-                  >
-                    <Sliders className="w-4 h-4" />
-                    <span>Visão Geral & Dashboard</span>
-                  </button>
-
+                <div className="space-y-0.5">
                   <button
                     onClick={() => {
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('whatsapp');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'whatsapp'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <QrCode className="w-4 h-4" />
-                    <span>WhatsApp & QR Code</span>
+                    <Radio className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>WhatsApp & QR</span>
                   </button>
 
                   <button
@@ -203,14 +168,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('private');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'private'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <MessageSquare className="w-4 h-4" />
-                    <span>Conversas (Privado)</span>
+                    <MessageSquare className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Privado / Conversas</span>
                   </button>
 
                   <button
@@ -218,14 +183,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('groups');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'groups'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <Users className="w-4 h-4" />
-                    <span>Controle de Grupos</span>
+                    <Users className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Grupos</span>
                   </button>
 
                   <button
@@ -233,14 +198,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('moderation');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'moderation'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <Shield className="w-4 h-4" />
-                    <span>Moderação de Conteúdo</span>
+                    <Shield className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Moderação</span>
                   </button>
 
                   <button
@@ -248,14 +213,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('memory');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'memory'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <Brain className="w-4 h-4" />
-                    <span>Memória de Contexto</span>
+                    <Database className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Memória</span>
                   </button>
 
                   <button
@@ -263,14 +228,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('knowledge');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'knowledge'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <BookOpen className="w-4 h-4" />
-                    <span>Base de Conhecimento</span>
+                    <BookOpen className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Conhecimento</span>
                   </button>
 
                   <button
@@ -278,14 +243,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('automation');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'automation'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <Radio className="w-4 h-4" />
-                    <span>Automação & Triggers</span>
+                    <Cpu className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Automação</span>
                   </button>
 
                   <button
@@ -293,14 +258,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('motivation');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'motivation'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <SunMedium className="w-4 h-4" />
-                    <span>Motivação Diária</span>
+                    <SunMedium className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Motivação</span>
                   </button>
 
                   <button
@@ -308,14 +273,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('documents');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'documents'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <FileText className="w-4 h-4" />
-                    <span>Documentos & PDF</span>
+                    <FileText className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Documentos / PDF</span>
                   </button>
 
                   <button
@@ -323,14 +288,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('stats');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'stats'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <BarChart3 className="w-4 h-4" />
-                    <span>Estatísticas do Bot</span>
+                    <BarChart3 className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Métricas</span>
                   </button>
 
                   <button
@@ -338,14 +303,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('logs');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'logs'
-                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                        : 'text-zinc-400 hover:text-zinc-200 hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <ShieldAlert className="w-4 h-4" />
-                    <span>Logs de Auditoria</span>
+                    <Terminal className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Auditoria & Logs</span>
                   </button>
 
                   <button
@@ -353,91 +318,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       if (currentView !== 'manage') onNavigate('manage', selectedBot);
                       handleTabClick('settings');
                     }}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                    className={`w-full flex items-center gap-2.5 px-3 py-1.5 rounded-[4px] text-xs font-medium transition-colors ${
                       currentView === 'manage' && activeBotTab === 'settings'
-                        ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shadow-xs'
-                        : 'text-zinc-300 hover:text-white hover:bg-[#151A1F]'
+                        ? 'bg-[#16191E] text-white border border-[#2A2F37]'
+                        : 'text-[#9DA4B0] hover:text-white hover:bg-[#101216]'
                     }`}
                   >
-                    <Settings className="w-4 h-4 text-emerald-400" />
-                    <span className="font-semibold text-emerald-300">Configurações</span>
+                    <Settings className="w-3.5 h-3.5 text-[#626B79]" />
+                    <span>Configurações</span>
                   </button>
-                </nav>
+                </div>
               </div>
             )}
-
-            {/* SISTEMA & SEGURANÇA */}
-            <div>
-              <div className="px-3 mb-2 text-[11px] font-semibold tracking-wider text-zinc-500 uppercase">
-                {isAdminMode ? 'Segurança & Modo' : 'Seu Plano & Acesso'}
-              </div>
-              <div className="p-3 rounded-xl bg-[#101418] border border-[#22282F] space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-zinc-300 font-medium">
-                    {isAdminMode ? 'Modo de Acesso' : 'Plano Comercial'}
-                  </span>
-                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
-                    isAdminMode ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                  }`}>
-                    {isAdminMode ? 'MASTER ADMIN' : (selectedBot?.plan?.toUpperCase() || 'PRO')}
-                  </span>
-                </div>
-                <p className="text-[11px] text-zinc-500 leading-tight">
-                  {isAdminMode 
-                    ? 'Acesso irrestrito a configurações, criação e exclusão de bots.'
-                    : 'Ambiente blindado do cliente: chaves Gemini e credenciais da infraestrutura gerenciadas com segurança.'}
-                </p>
-                {isAdminMode ? (
-                  <button
-                    onClick={onToggleAdminMode}
-                    className="w-full text-xs font-medium py-1.5 px-2.5 rounded-lg bg-[#151A1F] hover:bg-[#1C2229] border border-[#22282F] text-zinc-300 hover:text-white transition-colors flex items-center justify-center gap-1.5"
-                  >
-                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
-                    <span>Simular Visão do Cliente</span>
-                  </button>
-                ) : (
-                  <div className="pt-1 flex flex-col gap-1.5">
-                    <button
-                      onClick={() => {
-                        if (selectedBot) {
-                          localStorage.removeItem(`bot_token_${selectedBot.id}`);
-                        }
-                        window.location.reload();
-                      }}
-                      className="w-full text-xs font-medium py-1.5 px-2.5 rounded-lg bg-[#151A1F] hover:bg-rose-500/10 border border-[#22282F] text-zinc-300 hover:text-rose-400 transition-colors flex items-center justify-center gap-1.5"
-                    >
-                      <span>Sair do Painel</span>
-                    </button>
-                    <a
-                      href="/admin"
-                      className="text-[10px] text-center text-zinc-600 hover:text-zinc-400 transition-colors"
-                    >
-                      Acesso Administrador TechStar →
-                    </a>
-                  </div>
-                )}
-              </div>
-            </div>
           </div>
         </div>
 
-        {/* User Footer Profile */}
-        <div className="p-3 border-t border-[#22282F] bg-[#0A0D10]">
-          <div className="flex items-center gap-3 p-2 rounded-lg bg-[#101418] border border-[#22282F]">
-            <div className="w-8 h-8 rounded-full bg-emerald-950 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-              <User className="w-4 h-4" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs font-semibold text-zinc-200 truncate">
-                {isAdminMode ? 'TechStar Master' : (selectedBot?.ownerName || 'Cliente Autenticado')}
-              </p>
-              <div className="flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                <p className="text-[10px] text-zinc-400 truncate">
-                  {isAdminMode ? 'Admin Operacional' : 'Token Ativo'}
-                </p>
-              </div>
-            </div>
+        {/* Estado dos Motores de Execução */}
+        <div className="p-3 border-t border-[#1E2228] bg-[#101216] shrink-0">
+          <div className="flex items-center justify-between text-[11px] font-mono text-[#626B79] mb-1">
+            <span>MOTOR IA</span>
+            <span className="text-[#10B981]">GEMINI 1.5</span>
+          </div>
+          <div className="flex items-center justify-between text-[11px] font-mono text-[#626B79]">
+            <span>LIB BAILEYS</span>
+            <span className="text-[#9DA4B0]">v7.0.0</span>
           </div>
         </div>
       </aside>

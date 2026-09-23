@@ -55,8 +55,9 @@ export interface Bot {
   antiBadWordsEnabled?: boolean;
   badWords?: string[];
   antiSpamEnabled?: boolean;
+  antiSpamMaxMessages?: number;
   adminImmunity?: boolean;
-  moderationAction?: 'warn' | 'delete' | 'remove';
+  moderationAction?: 'warn' | 'delete' | 'remove' | 'kick' | string;
   dailyMotivationEnabled?: boolean;
   dailyMotivationTitle?: string;
   dailyMotivationUseEmoji?: boolean;

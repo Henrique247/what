@@ -1,47 +1,46 @@
 import React from 'react';
-import { Loader2 } from 'lucide-react';
 
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
-  variant?: 'primary' | 'secondary' | 'outline' | 'danger' | 'ghost';
+  variant?: 'primary' | 'secondary' | 'danger' | 'ghost' | 'outline';
   size?: 'sm' | 'md' | 'lg';
-  loading?: boolean;
   icon?: React.ReactNode;
+  loading?: boolean;
 }
 
 export const Button: React.FC<ButtonProps> = ({
   children,
-  variant = 'primary',
+  variant = 'secondary',
   size = 'md',
-  loading = false,
   icon,
-  className = '',
+  loading,
   disabled,
+  className = '',
   ...props
 }) => {
-  const baseStyles = 'inline-flex items-center justify-center font-medium rounded-lg transition-all duration-150 cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-500/30 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap';
+  const baseClasses = "inline-flex items-center justify-center font-medium transition-colors focus:outline-none rounded-[4px] text-xs disabled:opacity-50 disabled:cursor-not-allowed select-none";
 
-  const sizeStyles = {
-    sm: 'text-xs px-3 py-1.5 gap-1.5',
-    md: 'text-sm px-4 py-2 gap-2',
-    lg: 'text-base px-5 py-2.5 gap-2.5',
+  const sizeClasses = {
+    sm: "h-8 px-2.5 gap-1.5",
+    md: "h-9 px-3.5 gap-2",
+    lg: "h-10 px-4 gap-2 text-sm"
   };
 
-  const variantStyles = {
-    primary: 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-sm shadow-emerald-950 border border-emerald-500/30 active:scale-[0.99]',
-    secondary: 'bg-[#151A1F] hover:bg-[#1C2229] text-zinc-200 border border-[#22282F] hover:border-[#2E3742]',
-    outline: 'bg-transparent hover:bg-zinc-800/40 text-zinc-300 border border-[#22282F] hover:border-zinc-700',
-    danger: 'bg-rose-600/15 hover:bg-rose-600/25 text-rose-400 border border-rose-500/30',
-    ghost: 'bg-transparent hover:bg-zinc-800/50 text-zinc-400 hover:text-zinc-200',
+  const variantClasses = {
+    primary: "bg-[#059669] hover:bg-[#047857] text-white border border-[#059669]",
+    secondary: "bg-[#16191E] hover:bg-[#1D2128] text-[#ECEED01] border border-[#2A2F37]",
+    danger: "bg-[#7F1D1D]/20 hover:bg-[#7F1D1D]/40 text-[#EF4444] border border-[#7F1D1D]/50",
+    ghost: "bg-transparent hover:bg-[#16191E] text-[#9DA4B0] hover:text-white border border-transparent",
+    outline: "bg-transparent hover:bg-[#16191E] text-[#9DA4B0] hover:text-white border border-[#2A2F37]"
   };
 
   return (
     <button
-      className={`${baseStyles} ${sizeStyles[size]} ${variantStyles[variant]} ${className}`}
+      className={`${baseClasses} ${sizeClasses[size] || sizeClasses.md} ${variantClasses[variant] || variantClasses.secondary} ${className}`}
       disabled={disabled || loading}
       {...props}
     >
       {loading ? (
-        <Loader2 className="w-4 h-4 animate-spin text-current" />
+        <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin" />
       ) : icon ? (
         <span className="shrink-0">{icon}</span>
       ) : null}

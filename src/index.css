@@ -2,71 +2,135 @@
 
 @layer base {
   :root {
-    --bg-primary: #080A0C;
-    --bg-card: #101418;
-    --bg-card-secondary: #151A1F;
-    --border-primary: #22282F;
-    --border-hover: #2E3742;
-    --text-primary: #F3F4F6;
-    --text-secondary: #9CA3AF;
-    --text-muted: #6B7280;
-    --accent-emerald: #10B981;
-    --accent-emerald-dark: #059669;
-    --accent-emerald-glow: rgba(16, 185, 129, 0.15);
+    /* Canvas Base */
+    --bg-canvas: #090A0C;
+    --bg-surface-1: #101216;
+    --bg-surface-2: #16191E;
+    --bg-surface-active: #1D2128;
+
+    /* Bordas e Divisores */
+    --border-subtle: #1E2228;
+    --border-default: #2A2F37;
+    --border-strong: #3A414D;
+
+    /* Tipografia e Contraste */
+    --text-primary: #ECEED01;
+    --text-secondary: #9DA4B0;
+    --text-muted: #626B79;
+
+    /* Indicadores de Estado Operacional */
+    --status-online: #10B981;
+    --status-offline: #6B7280;
+    --status-error: #EF4444;
+    --status-warning: #F59E0B;
+
+    /* Ações / Marca */
+    --accent-primary: #059669;
+    --accent-hover: #047857;
   }
 
   body {
-    background-color: var(--bg-primary);
+    background-color: var(--bg-canvas);
     color: var(--text-primary);
-    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
   }
 }
 
-/* Custom scrollbars */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* Utilitários de Painel e Componentes Base */
+.panel {
+  background-color: var(--bg-surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
 }
 
-::-webkit-scrollbar-track {
-  background: #080A0C;
+.panel-header {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-::-webkit-scrollbar-thumb {
-  background: #22282F;
-  border-radius: 9999px;
+.badge-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: 'JetBrains Mono', monospace;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background: #2E3742;
-}
-
-/* Glass & Glow utilities */
+/* Utilitários TECHSTAR Console */
 .techstar-card {
-  background-color: #101418;
-  border: 1px solid #22282F;
-  border-radius: 0.75rem;
-  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  background-color: var(--bg-surface-1);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  transition: border-color 0.15s ease;
 }
 
 .techstar-card:hover {
-  border-color: #2E3742;
+  border-color: var(--border-default);
 }
 
 .techstar-card-secondary {
-  background-color: #151A1F;
-  border: 1px solid #22282F;
-  border-radius: 0.5rem;
+  background-color: var(--bg-surface-2);
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+}
+
+.techstar-input {
+  background-color: var(--bg-surface-1);
+  border: 1px solid var(--border-default);
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: #ECEED01;
+  font-size: 13px;
+  transition: border-color 0.15s ease;
+}
+
+.techstar-input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
 }
 
 .techstar-badge-active {
   background: rgba(16, 185, 129, 0.12);
-  color: #34D399;
+  color: #10B981;
   border: 1px solid rgba(16, 185, 129, 0.25);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
 }
 
 .techstar-badge-inactive {
   background: rgba(107, 114, 128, 0.12);
-  color: #9CA3AF;
+  color: #9DA4B0;
   border: 1px solid rgba(107, 114, 128, 0.2);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-canvas);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-default);
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
 }

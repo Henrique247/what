@@ -265,10 +265,12 @@ const AppContent: React.FC = () => {
         }}
         isOpenMobile={mobileSidebarOpen}
         onCloseMobile={() => setMobileSidebarOpen(false)}
+        totalBots={bots.length}
+        activeBots={bots.filter(b => b.active === 1 || b.status === 'Conectado').length}
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 lg:pl-64">
+      <div className="flex-1 flex flex-col min-w-0 lg:pl-60">
         {/* Topbar Header */}
         <Topbar
           currentView={currentView}
@@ -317,6 +319,17 @@ const AppContent: React.FC = () => {
               onUpdateBot={(updated) => setSelectedBot(updated)}
               isAdminMode={isAdminMode}
               clientToken={clientToken}
+              onBack={() => navigateTo('bots')}
+              onRestartBot={async (botId) => {
+                await api.resetBotSession(botId, clientToken, isAdminMode);
+                toast.success('Sessão da instância reiniciada');
+                loadData(false);
+              }}
+              onDisconnectBot={async (botId) => {
+                await api.saveBotConfig(botId, { active: 0 }, clientToken, isAdminMode);
+                toast.success('Instância desconectada com sucesso');
+                loadData(false);
+              }}
             />
           )}
         </main>

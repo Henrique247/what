@@ -1,32 +1,16 @@
 import React from 'react';
-import { 
-  Bot as BotIcon, 
-  Wifi, 
-  MessageSquare, 
-  Users, 
-  ArrowUpRight, 
-  ShieldCheck, 
-  PlusCircle, 
-  ExternalLink,
-  Clock,
-  Sparkles,
-  CheckCircle2,
-  AlertTriangle
-} from 'lucide-react';
 import { Bot, AdminStats } from '../types';
-import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
-import { StatCardSkeleton, Skeleton } from '../components/ui/Skeleton';
-import { EmptyState } from '../components/ui/EmptyState';
+import { Plus, ArrowUpRight } from 'lucide-react';
 
 interface DashboardPageProps {
   stats: AdminStats | null;
   bots: Bot[];
   loading: boolean;
   onSelectBot: (bot: Bot) => void;
-  onNavigateToBots: () => void;
+  onNavigateToBots?: () => void;
   onOpenCreateModal: () => void;
-  isAdminMode: boolean;
+  isAdminMode?: boolean;
 }
 
 export const DashboardPage: React.FC<DashboardPageProps> = ({
@@ -34,367 +18,133 @@ export const DashboardPage: React.FC<DashboardPageProps> = ({
   bots,
   loading,
   onSelectBot,
-  onNavigateToBots,
-  onOpenCreateModal,
-  isAdminMode,
+  onOpenCreateModal
 }) => {
-  const onlineBotsCount = bots.filter((b) => b.status === 'Conectado').length;
-  const activeBotsCount = bots.filter((b) => b.active === 1).length;
+  const activeBotsCount = bots.filter(b => b.active === 1 || b.status === 'Conectado').length;
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-300">
-      {/* Hero Welcome Banner */}
-      <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-[#101418] via-[#131920] to-[#101418] border border-[#22282F] p-6 sm:p-8">
-        <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Badge variant="emerald" dot>
-                Plataforma Multi-Bot SaaS
-              </Badge>
-              <span className="text-xs text-zinc-500 font-mono">v2.4 Pro</span>
-            </div>
-            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-white">
-              Painel de Controle TechStar
-            </h1>
-            <p className="text-sm text-zinc-400 max-w-xl leading-relaxed">
-              Monitore suas instâncias de WhatsApp, gerencie inteligências artificiais com Gemini, 
-              acompanhe memória de contexto e audite interações em tempo real.
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            {isAdminMode && (
-              <Button
-                variant="primary"
-                icon={<PlusCircle className="w-4 h-4" />}
-                onClick={onOpenCreateModal}
-              >
-                Criar Novo Bot
-              </Button>
-            )}
-            <Button
-              variant="secondary"
-              icon={<BotIcon className="w-4 h-4" />}
-              onClick={onNavigateToBots}
-            >
-              Ver Todos os Bots ({bots.length})
-            </Button>
-          </div>
+    <div className="space-y-6">
+      {/* Cabeçalho de Comando */}
+      <div className="flex items-center justify-between pb-4 border-b border-[#1E2228]">
+        <div>
+          <h1 className="text-base font-semibold text-[#ECEED0] tracking-tight">Console de Operações</h1>
+          <p className="text-xs text-[#626B79] mt-0.5">Gestão das instâncias do WhatsApp e pipelines de IA ativas.</p>
         </div>
-
-        {/* Decorative Grid Line */}
-        <div className="absolute right-0 top-0 bottom-0 w-1/3 bg-[radial-gradient(ellipse_at_top_right,rgba(16,185,129,0.08),transparent_70%)] pointer-events-none" />
+        <Button 
+          size="sm" 
+          variant="primary" 
+          icon={<Plus className="w-3.5 h-3.5" />} 
+          onClick={onOpenCreateModal}
+        >
+          Nova Instância Bot
+        </Button>
       </div>
 
-      {/* 4 Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        {loading ? (
-          <>
-            <StatCardSkeleton />
-            <StatCardSkeleton />
-            <StatCardSkeleton />
-            <StatCardSkeleton />
-          </>
-        ) : (
-          <>
-            {/* Card 1: Total de Bots */}
-            <div className="techstar-card p-5 relative overflow-hidden group">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Total de Bots
-                </span>
-                <div className="w-9 h-9 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-center justify-center text-emerald-400 group-hover:border-emerald-500/30 transition-colors">
-                  <BotIcon className="w-4 h-4" />
-                </div>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-bold text-white tracking-tight">
-                  {bots.length}
-                </span>
-                <span className="text-xs text-emerald-400 font-medium">
-                  {activeBotsCount} ativos
-                </span>
-              </div>
-              <p className="mt-1 text-xs text-zinc-500">Instâncias criadas no sistema</p>
-            </div>
+      {/* Grelha Tabular de Métricas Chave */}
+      <div className="grid grid-cols-1 md:grid-cols-4 border border-[#1E2228] bg-[#101216] divide-y md:divide-y-0 md:divide-x divide-[#1E2228] rounded-[6px]">
+        <div className="p-4">
+          <div className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">Total de Instâncias</div>
+          <div className="text-xl font-mono font-semibold text-[#ECEED0] mt-2">{bots.length}</div>
+          <div className="text-[10px] text-[#9DA4B0] mt-1 font-mono">{activeBotsCount} ativas em execução</div>
+        </div>
 
-            {/* Card 2: Bots Online no WhatsApp */}
-            <div className="techstar-card p-5 relative overflow-hidden group">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Conexões WhatsApp
-                </span>
-                <div className="w-9 h-9 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-center justify-center text-emerald-400 group-hover:border-emerald-500/30 transition-colors">
-                  <Wifi className="w-4 h-4" />
-                </div>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-bold text-white tracking-tight">
-                  {onlineBotsCount}
-                </span>
-                <span className="text-xs text-zinc-400">
-                  / {bots.length} instâncias
-                </span>
-              </div>
-              <div className="mt-1 flex items-center gap-1.5">
-                <span className={`w-1.5 h-1.5 rounded-full ${onlineBotsCount > 0 ? 'bg-emerald-400 animate-pulse' : 'bg-zinc-600'}`} />
-                <p className="text-xs text-zinc-500">
-                  {onlineBotsCount > 0 ? 'Instâncias respondendo' : 'Nenhuma sessão conectada'}
-                </p>
-              </div>
-            </div>
+        <div className="p-4">
+          <div className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">Mensagens Processadas</div>
+          <div className="text-xl font-mono font-semibold text-[#ECEED0] mt-2">
+            {stats?.totalMessagesProcessed ? stats.totalMessagesProcessed.toLocaleString() : (stats?.totalMessages ? stats.totalMessages.toLocaleString() : '0')}
+          </div>
+          <div className="text-[10px] text-[#10B981] mt-1 font-mono">100% integridade do histórico</div>
+        </div>
 
-            {/* Card 3: Mensagens Processadas */}
-            <div className="techstar-card p-5 relative overflow-hidden group">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Mensagens Processadas
-                </span>
-                <div className="w-9 h-9 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-center justify-center text-emerald-400 group-hover:border-emerald-500/30 transition-colors">
-                  <MessageSquare className="w-4 h-4" />
-                </div>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-bold text-white tracking-tight">
-                  {stats?.totalMessages ?? 0}
-                </span>
-                <span className="text-xs text-zinc-400">mensagens</span>
-              </div>
-              <p className="mt-1 text-xs text-zinc-500">Histórico de contexto real gravado</p>
-            </div>
+        <div className="p-4">
+          <div className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">Grupos Moderados</div>
+          <div className="text-xl font-mono font-semibold text-[#ECEED0] mt-2">
+            {stats?.totalGroupsConfigured ?? (stats?.totalGroups ?? 0)}
+          </div>
+          <div className="text-[10px] text-[#9DA4B0] mt-1 font-mono">Anti-spam e anti-link ativos</div>
+        </div>
 
-            {/* Card 4: Utilizadores Atendidos */}
-            <div className="techstar-card p-5 relative overflow-hidden group">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-                  Utilizadores Atendidos
-                </span>
-                <div className="w-9 h-9 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-center justify-center text-emerald-400 group-hover:border-emerald-500/30 transition-colors">
-                  <Users className="w-4 h-4" />
-                </div>
-              </div>
-              <div className="mt-4 flex items-baseline gap-2">
-                <span className="text-3xl font-bold text-white tracking-tight">
-                  {stats?.totalUsers ?? 0}
-                </span>
-                <span className="text-xs text-zinc-400">contatos únicos</span>
-              </div>
-              <p className="mt-1 text-xs text-zinc-500">Pessoas atendidas no WhatsApp</p>
-            </div>
-          </>
-        )}
+        <div className="p-4">
+          <div className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">Erros de Pipeline</div>
+          <div className="text-xl font-mono font-semibold text-[#ECEED0] mt-2">
+            {stats?.totalErrorsCount ?? (stats?.errorLogsCount ?? 0)}
+          </div>
+          <div className="text-[10px] text-[#626B79] mt-1 font-mono">Últimas 24 horas</div>
+        </div>
       </div>
 
-      {/* System Health & AI Infrastructure Monitoring (Item 35) */}
-      {isAdminMode && stats?.systemMetrics && (
-        <div className="techstar-card p-5 border border-[#22282F] bg-gradient-to-r from-[#0E1217] via-[#12161D] to-[#0E1217]">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex items-center gap-2.5">
-              <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-                <ShieldCheck className="w-4 h-4" />
-              </div>
-              <div>
-                <h3 className="text-sm font-semibold text-zinc-100 flex items-center gap-2">
-                  Saúde do Sistema & Infraestrutura
-                  <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                    ONLINE
-                  </span>
-                </h3>
-                <p className="text-xs text-zinc-400">
-                  Monitoramento em tempo real do runtime Node.js, Baileys e pipeline Gemini
-                </p>
-              </div>
-            </div>
-            <span className="text-[11px] font-mono text-zinc-500">
-              Node {stats.systemMetrics.nodeVersion}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2 border-t border-[#22282F]/70">
-            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
-              <span className="text-[11px] text-zinc-400 font-medium block">Memória RAM (Heap)</span>
-              <span className="text-lg font-bold text-zinc-100 font-mono mt-0.5 block">
-                {stats.systemMetrics.heapUsedMb} MB
-              </span>
-              <span className="text-[10px] text-zinc-500">
-                de {stats.systemMetrics.heapTotalMb} MB alocados
-              </span>
-            </div>
-
-            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
-              <span className="text-[11px] text-zinc-400 font-medium block">Uptime do Servidor</span>
-              <span className="text-lg font-bold text-zinc-100 font-mono mt-0.5 block">
-                {stats.systemMetrics.uptimeHours} h
-              </span>
-              <span className="text-[10px] text-emerald-400 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Operação Contínua 24h
-              </span>
-            </div>
-
-            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
-              <span className="text-[11px] text-zinc-400 font-medium block">Taxa de Sucesso IA</span>
-              <span className="text-lg font-bold text-emerald-400 font-mono mt-0.5 block">
-                {stats.aiSuccessRate || '100%'}
-              </span>
-              <span className="text-[10px] text-zinc-500">Pipeline Gemini Ativo</span>
-            </div>
-
-            <div className="p-3 rounded-xl bg-[#151A1F] border border-[#22282F]">
-              <span className="text-[11px] text-zinc-400 font-medium block">Erros / Bloqueios</span>
-              <span className={`text-lg font-bold font-mono mt-0.5 block ${(stats.errorLogsCount || 0) > 0 ? 'text-amber-400' : 'text-zinc-300'}`}>
-                {stats.errorLogsCount || 0}
-              </span>
-              <span className="text-[10px] text-zinc-500">Eventos não-sucesso auditados</span>
-            </div>
-          </div>
+      {/* Tabela de Instâncias Sob Gestão */}
+      <div className="panel">
+        <div className="panel-header">
+          <span className="text-xs font-semibold text-[#ECEED0]">Barramento de Bots</span>
+          <span className="text-[11px] font-mono text-[#626B79]">{bots.length} REGISTOS</span>
         </div>
-      )}
 
-      {/* Main Content Grid: Bots Recentes & Atividade de Auditoria */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left 2 Cols: Bots em Destaque */}
-        <div className="lg:col-span-2 space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-base font-semibold text-zinc-100">
-                Assistentes WhatsApp em Operação
-              </h3>
-              <p className="text-xs text-zinc-400">
-                Clique em qualquer bot para abrir o painel individual de gestão
-              </p>
-            </div>
-            <button
-              onClick={onNavigateToBots}
-              className="text-xs text-emerald-400 hover:text-emerald-300 font-medium flex items-center gap-1 transition-colors"
-            >
-              <span>Ver todos</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
-          {loading ? (
-            <div className="space-y-3">
-              <Skeleton className="h-24 w-full" />
-              <Skeleton className="h-24 w-full" />
-            </div>
-          ) : bots.length === 0 ? (
-            <EmptyState
-              icon={<BotIcon className="w-6 h-6" />}
-              title="Nenhum bot cadastrado"
-              description="Crie o seu primeiro assistente WhatsApp inteligente para começar a atender clientes 24/7."
-              actionLabel={isAdminMode ? "Criar Primeiro Bot" : undefined}
-              onAction={onOpenCreateModal}
-            />
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-              {bots.slice(0, 4).map((bot) => (
-                <div
-                  key={bot.id}
-                  onClick={() => onSelectBot(bot)}
-                  className="techstar-card p-4 hover:border-emerald-500/40 cursor-pointer group flex flex-col justify-between"
-                >
-                  <div>
-                    <div className="flex items-start justify-between gap-3 mb-2">
-                      <div className="flex items-center gap-2.5">
-                        <div className="w-8 h-8 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-center justify-center text-emerald-400 font-bold text-xs group-hover:border-emerald-500/30">
-                          {bot.name.charAt(0).toUpperCase()}
-                        </div>
-                        <div>
-                          <h4 className="text-sm font-semibold text-zinc-100 group-hover:text-emerald-400 transition-colors">
-                            {bot.name}
-                          </h4>
-                          <span className="text-[10px] text-zinc-500 font-mono">
-                            ID: {bot.id}
-                          </span>
-                        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-[#1E2228] bg-[#090A0C] text-[#626B79] font-mono text-[11px] uppercase">
+                <th className="py-2.5 px-4 font-normal">Identificação do Bot</th>
+                <th className="py-2.5 px-4 font-normal">Proprietário / Linha</th>
+                <th className="py-2.5 px-4 font-normal">Estado do Motor</th>
+                <th className="py-2.5 px-4 font-normal">Canais Ativos</th>
+                <th className="py-2.5 px-4 font-normal text-right">Ação</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-[#1E2228] font-mono text-[#9DA4B0]">
+              {loading ? (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-[#626B79]">Carregando dados das instâncias...</td>
+                </tr>
+              ) : bots.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="py-8 text-center text-[#626B79]">Nenhuma instância configurada no sistema.</td>
+                </tr>
+              ) : (
+                bots.map((bot) => (
+                  <tr key={bot.id} className="hover:bg-[#16191E] transition-colors">
+                    <td className="py-3 px-4">
+                      <div className="font-sans font-medium text-[#ECEED0] text-xs">{bot.name}</div>
+                      <div className="text-[10px] text-[#626B79] font-mono mt-0.5">{bot.id}</div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="text-[#ECEED0]">{bot.ownerName || 'Não definido'}</div>
+                      <div className="text-[10px] text-[#626B79]">{bot.ownerPhone || '—'}</div>
+                    </td>
+                    <td className="py-3 px-4">
+                      {bot.active || bot.status === 'Conectado' ? (
+                        <span className="badge-status bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/20">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" />
+                          ATIVO
+                        </span>
+                      ) : (
+                        <span className="badge-status bg-[#6B7280]/10 text-[#9DA4B0] border border-[#6B7280]/20">
+                          <span className="w-1.5 h-1.5 rounded-full bg-[#6B7280]" />
+                          INATIVO
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4 text-[11px]">
+                      <div className="flex gap-1.5">
+                        {bot.respondInPrivate && <span className="px-1.5 py-0.5 bg-[#16191E] border border-[#2A2F37] rounded text-[#ECEED0]">PV</span>}
+                        {bot.respondInGroups && <span className="px-1.5 py-0.5 bg-[#16191E] border border-[#2A2F37] rounded text-[#ECEED0]">GP</span>}
                       </div>
-
-                      <Badge
-                        variant={bot.status === 'Conectado' ? 'emerald' : 'gray'}
-                        dot={bot.status === 'Conectado'}
+                    </td>
+                    <td className="py-3 px-4 text-right">
+                      <Button 
+                        size="sm" 
+                        variant="secondary" 
+                        onClick={() => onSelectBot(bot)} 
+                        icon={<ArrowUpRight className="w-3.5 h-3.5"/>}
                       >
-                        {bot.status}
-                      </Badge>
-                    </div>
-
-                    <p className="text-xs text-zinc-400 line-clamp-2 leading-relaxed mb-3">
-                      {bot.systemPrompt || "Assistente virtual configurado para atendimento ágil."}
-                    </p>
-                  </div>
-
-                  <div className="pt-3 border-t border-[#22282F]/70 flex items-center justify-between text-xs text-zinc-400">
-                    <span className="text-[11px]">
-                      Dono: <strong className="text-zinc-300 font-medium">{bot.ownerName || 'Não definido'}</strong>
-                    </span>
-                    <span className="text-emerald-400 group-hover:translate-x-0.5 transition-transform text-[11px] font-medium flex items-center gap-1">
-                      Gerenciar →
-                    </span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        {/* Right Col: Logs de Auditoria Recentes */}
-        <div className="space-y-4">
-          <div className="flex items-center justify-between">
-            <div>
-              <h3 className="text-base font-semibold text-zinc-100">
-                Segurança & Auditoria
-              </h3>
-              <p className="text-xs text-zinc-400">
-                Últimas ações e validações de acesso
-              </p>
-            </div>
-            <span className="text-[11px] font-mono text-zinc-500">Tempo Real</span>
-          </div>
-
-          <div className="techstar-card p-4 space-y-3">
-            {loading ? (
-              <div className="space-y-2">
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-                <Skeleton className="h-10 w-full" />
-              </div>
-            ) : !stats?.recentActivity || stats.recentActivity.length === 0 ? (
-              <p className="text-xs text-zinc-500 py-6 text-center">
-                Nenhum evento registrado ainda. As ações do painel e comandos via WhatsApp aparecem aqui automaticamente.
-              </p>
-            ) : (
-              <div className="space-y-2.5 max-h-[360px] overflow-y-auto pr-1">
-                {stats.recentActivity.slice(0, 6).map((log, idx) => (
-                  <div
-                    key={idx}
-                    className="p-2.5 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-start justify-between gap-3 text-xs"
-                  >
-                    <div className="space-y-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
-                          log.result === 'SUCCESS' 
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
-                            : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
-                        }`}>
-                          {log.result}
-                        </span>
-                        <span className="font-semibold text-zinc-200 truncate">
-                          {log.action}
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-zinc-400 truncate">
-                        {log.details || log.command || 'Execução registrada'}
-                      </p>
-                    </div>
-
-                    <span className="text-[10px] text-zinc-500 shrink-0 font-mono">
-                      {log.createdAt ? new Date(log.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+                        Gerenciar
+                      </Button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
