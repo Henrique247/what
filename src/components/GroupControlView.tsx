@@ -271,19 +271,19 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
   return (
     <div className="space-y-6 animate-in fade-in duration-300">
       {/* Top Banner Card */}
-      <div className="techstar-card p-6 bg-gradient-to-r from-[#101418] via-[#151A1F] to-[#101418] border border-[#22282F] relative overflow-hidden">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-emerald-500/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-6 relative overflow-hidden shadow-lg">
+        <div className="absolute top-0 right-0 w-96 h-96 bg-sky-500/5 rounded-full blur-3xl pointer-events-none" />
 
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative z-10">
           <div>
-            <div className="flex items-center gap-2 text-emerald-400 mb-1">
+            <div className="flex items-center gap-2 text-sky-400 mb-1">
               <Shield className="w-5 h-5" />
               <span className="text-xs font-semibold uppercase tracking-wider">Módulo de Automação & Segurança</span>
             </div>
             <h2 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
               Gestão Inteligente de Grupos WhatsApp
             </h2>
-            <p className="text-xs sm:text-sm text-zinc-400 mt-1 max-w-2xl">
+            <p className="text-xs sm:text-sm text-slate-400 mt-1 max-w-2xl">
               Transforme seu bot em um administrador inteligente. Modere mensagens, bloqueie links e spam, envie motivação diária com IA e configure regras personalizadas por grupo.
             </p>
           </div>
@@ -302,29 +302,29 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
         </div>
 
         {/* Quick Metrics Bar */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-5 border-t border-[#22282F]">
-          <div className="bg-[#0B0E12]/60 p-3 rounded-xl border border-[#22282F]">
-            <span className="text-[11px] text-zinc-400 font-medium uppercase tracking-wider block">Grupos Conectados</span>
-            <span className="text-lg sm:text-xl font-bold text-white mt-0.5 block">{groups.length}</span>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-5 border-t border-[#142340]">
+          <div className="bg-[#081021] p-3.5 rounded-xl border border-[#162a4d]">
+            <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wider block">Grupos Conectados</span>
+            <span className="text-lg sm:text-xl font-bold text-white mt-0.5 block font-mono">{groups.length}</span>
           </div>
 
-          <div className="bg-[#0B0E12]/60 p-3 rounded-xl border border-[#22282F]">
-            <span className="text-[11px] text-zinc-400 font-medium uppercase tracking-wider block">Bot Administrador</span>
-            <span className="text-lg sm:text-xl font-bold text-emerald-400 mt-0.5 block">
+          <div className="bg-[#081021] p-3.5 rounded-xl border border-[#162a4d]">
+            <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wider block">Bot Administrador</span>
+            <span className="text-lg sm:text-xl font-bold text-sky-400 mt-0.5 block font-mono">
               {groups.filter(g => g.botIsAdmin).length}
             </span>
           </div>
 
-          <div className="bg-[#0B0E12]/60 p-3 rounded-xl border border-[#22282F]">
-            <span className="text-[11px] text-zinc-400 font-medium uppercase tracking-wider block">Moderação Ativa</span>
-            <span className="text-lg sm:text-xl font-bold text-emerald-400 mt-0.5 block">
+          <div className="bg-[#081021] p-3.5 rounded-xl border border-[#162a4d]">
+            <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wider block">Moderação Ativa</span>
+            <span className="text-lg sm:text-xl font-bold text-sky-400 mt-0.5 block font-mono">
               {groups.filter(g => g.config?.antiLinkEnabled || g.config?.antiBadWordsEnabled || g.config?.antiSpamEnabled).length}
             </span>
           </div>
 
-          <div className="bg-[#0B0E12]/60 p-3 rounded-xl border border-[#22282F]">
-            <span className="text-[11px] text-zinc-400 font-medium uppercase tracking-wider block">Motivação Diária</span>
-            <span className="text-lg sm:text-xl font-bold text-cyan-400 mt-0.5 block">
+          <div className="bg-[#081021] p-3.5 rounded-xl border border-[#162a4d]">
+            <span className="text-[11px] text-slate-400 font-medium uppercase tracking-wider block">Motivação Diária</span>
+            <span className="text-lg sm:text-xl font-bold text-sky-300 mt-0.5 block font-mono">
               {groups.filter(g => g.config?.dailyMotivationEnabled).length}
             </span>
           </div>
@@ -345,13 +345,13 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
         </div>
 
         {/* Tab Selection: Todos, Sou Admin, Sou Membro */}
-        <div className="flex items-center gap-1.5 p-1 bg-[#0F1318] border border-[#22282F] rounded-xl w-full sm:w-auto justify-start sm:justify-end">
+        <div className="flex items-center gap-1.5 p-1 bg-[#091326] border border-[#1b3259] rounded-xl w-full sm:w-auto justify-start sm:justify-end">
           <button
             onClick={() => setGroupTabFilter('ALL')}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
               groupTabFilter === 'ALL'
-                ? 'bg-[#1E252D] text-white shadow-sm font-semibold'
-                : 'text-zinc-400 hover:text-zinc-200'
+                ? 'bg-sky-500 text-white shadow-[0_0_10px_rgba(14,165,233,0.35)] font-semibold'
+                : 'text-slate-400 hover:text-white'
             }`}
           >
             Todos ({groups.length})
@@ -361,8 +361,8 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
             onClick={() => setGroupTabFilter('ADMIN')}
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
               groupTabFilter === 'ADMIN'
-                ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-semibold'
-                : 'text-zinc-400 hover:text-emerald-400'
+                ? 'bg-sky-500/20 text-sky-400 border border-sky-400/30 font-semibold'
+                : 'text-slate-400 hover:text-sky-300'
             }`}
           >
             <Crown className="w-3.5 h-3.5" />
@@ -374,7 +374,7 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
             className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5 ${
               groupTabFilter === 'MEMBER'
                 ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 font-semibold'
-                : 'text-zinc-400 hover:text-amber-400'
+                : 'text-slate-400 hover:text-amber-400'
             }`}
           >
             <Users className="w-3.5 h-3.5" />
@@ -387,10 +387,10 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
       {loading ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[1, 2, 3].map(i => (
-            <div key={i} className="techstar-card p-5 space-y-4">
+            <div key={i} className="bg-[#0b1426]/90 border border-[#162a4d] rounded-2xl p-5 space-y-4">
               <Skeleton className="h-6 w-3/4 rounded-md" />
               <Skeleton className="h-4 w-1/2 rounded-md" />
-              <div className="pt-4 border-t border-[#22282F] flex justify-between">
+              <div className="pt-4 border-t border-[#142340] flex justify-between">
                 <Skeleton className="h-8 w-24 rounded-lg" />
                 <Skeleton className="h-8 w-20 rounded-lg" />
               </div>
@@ -398,7 +398,7 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
           ))}
         </div>
       ) : filteredGroups.length === 0 ? (
-        <div className="techstar-card p-12 text-center">
+        <div className="bg-[#0b1426]/90 border border-[#162a4d] rounded-2xl p-12 text-center">
           <EmptyState
             title="Nenhum grupo encontrado"
             description={
@@ -406,7 +406,7 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
                 ? "Nenhum grupo corresponde à sua busca." 
                 : "O bot ainda não participa de nenhum grupo no WhatsApp ou o WhatsApp está desconectado."
             }
-            icon={<Users className="w-10 h-10 text-zinc-500" />}
+            icon={<Users className="w-10 h-10 text-slate-500" />}
             action={
               <Button
                 variant="secondary"
@@ -428,60 +428,60 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
             return (
               <div 
                 key={group.groupId} 
-                className="techstar-card p-5 flex flex-col justify-between border border-[#22282F] hover:border-emerald-500/30 transition-all group"
+                className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl p-5 flex flex-col justify-between border border-[#162a4d] hover:border-sky-500/40 hover:shadow-[0_8px_30px_-8px_rgba(14,165,233,0.2)] transition-all group"
               >
                 <div>
                   {/* Top Badges */}
                   <div className="flex items-center justify-between gap-2 mb-3">
                     <Badge
-                      variant={group.botIsAdmin ? 'emerald' : 'amber'}
+                      variant={group.botIsAdmin ? 'cyan' : 'amber'}
                       dot={group.botIsAdmin}
                     >
                       {group.botIsAdmin ? 'Bot Admin' : 'Membro Comum'}
                     </Badge>
 
-                    <div className="flex items-center gap-1.5 text-xs text-zinc-400 font-medium">
-                      <Users className="w-3.5 h-3.5 text-zinc-500" />
+                    <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
+                      <Users className="w-3.5 h-3.5 text-slate-500" />
                       <span>{group.participantCount} membros</span>
                     </div>
                   </div>
 
                   {/* Group Title */}
-                  <h3 className="text-base font-bold text-white group-hover:text-emerald-400 transition-colors line-clamp-1">
+                  <h3 className="text-base font-bold text-white group-hover:text-sky-300 transition-colors line-clamp-1">
                     {group.groupName}
                   </h3>
-                  <p className="text-[11px] text-zinc-500 font-mono mt-0.5 truncate">
+                  <p className="text-[11px] text-slate-500 font-mono mt-0.5 truncate">
                     {group.groupId}
                   </p>
 
                   {/* Module Indicators */}
-                  <div className="mt-4 pt-3 border-t border-[#22282F] space-y-2">
+                  <div className="mt-4 pt-3 border-t border-[#142340] space-y-2">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-400 flex items-center gap-1.5">
-                        <Shield className="w-3.5 h-3.5 text-zinc-500" />
+                      <span className="text-slate-400 flex items-center gap-1.5">
+                        <Shield className="w-3.5 h-3.5 text-slate-500" />
                         Moderação Inteligente:
                       </span>
-                      <span className={`font-semibold ${isModActive ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                      <span className={`font-semibold ${isModActive ? 'text-sky-400' : 'text-slate-500'}`}>
                         {isModActive ? 'Ativa' : 'Desativada'}
                       </span>
                     </div>
 
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-400 flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-zinc-500" />
+                      <span className="text-slate-400 flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-slate-500" />
                         Motivação Diária:
                       </span>
-                      <span className={`font-semibold ${isMotivationActive ? 'text-cyan-400' : 'text-zinc-500'}`}>
+                      <span className={`font-semibold ${isMotivationActive ? 'text-sky-300' : 'text-slate-500'}`}>
                         {isMotivationActive ? `${group.config?.dailyMotivationTime || '08:00'}` : 'Desativada'}
                       </span>
                     </div>
 
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-zinc-400 flex items-center gap-1.5">
-                        <MessageSquare className="w-3.5 h-3.5 text-zinc-500" />
+                      <span className="text-slate-400 flex items-center gap-1.5">
+                        <MessageSquare className="w-3.5 h-3.5 text-slate-500" />
                         Boas-vindas:
                       </span>
-                      <span className={`font-semibold ${group.config?.welcomeEnabled ? 'text-emerald-400' : 'text-zinc-500'}`}>
+                      <span className={`font-semibold ${group.config?.welcomeEnabled ? 'text-sky-400' : 'text-slate-500'}`}>
                         {group.config?.welcomeEnabled ? 'Ativa' : 'Padrão do Bot'}
                       </span>
                     </div>
@@ -489,7 +489,7 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
                 </div>
 
                 {/* Card Bottom Actions */}
-                <div className="mt-5 pt-4 border-t border-[#22282F] flex items-center gap-2">
+                <div className="mt-5 pt-4 border-t border-[#142340] flex items-center gap-2">
                   <Button
                     variant="primary"
                     size="sm"
@@ -547,13 +547,13 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
           )}
 
           {/* Modal Tab Buttons */}
-          <div className="flex items-center gap-1.5 p-1 bg-[#0B0E12] rounded-xl border border-[#22282F] overflow-x-auto">
+          <div className="flex items-center gap-1.5 p-1 bg-[#081021] rounded-xl border border-[#162a4d] overflow-x-auto">
             <button
               onClick={() => setModalTab('moderation')}
               className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
                 modalTab === 'moderation'
-                  ? 'bg-[#151A1F] text-emerald-400 border border-emerald-500/30 shadow-xs'
-                  : 'text-zinc-400 hover:text-zinc-200'
+                  ? 'bg-sky-500/20 text-sky-400 border border-sky-400/40 shadow-[0_0_10px_rgba(14,165,233,0.2)]'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               <Shield className="w-3.5 h-3.5" />
@@ -564,8 +564,8 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
               onClick={() => setModalTab('messages')}
               className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
                 modalTab === 'messages'
-                  ? 'bg-[#151A1F] text-emerald-400 border border-emerald-500/30 shadow-xs'
-                  : 'text-zinc-400 hover:text-zinc-200'
+                  ? 'bg-sky-500/20 text-sky-400 border border-sky-400/40 shadow-[0_0_10px_rgba(14,165,233,0.2)]'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               <FileText className="w-3.5 h-3.5" />
@@ -576,8 +576,8 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
               onClick={() => setModalTab('automation')}
               className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
                 modalTab === 'automation'
-                  ? 'bg-[#151A1F] text-emerald-400 border border-emerald-500/30 shadow-xs'
-                  : 'text-zinc-400 hover:text-zinc-200'
+                  ? 'bg-sky-500/20 text-sky-400 border border-sky-400/40 shadow-[0_0_10px_rgba(14,165,233,0.2)]'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               <Sparkles className="w-3.5 h-3.5" />
@@ -588,8 +588,8 @@ export const GroupControlView: React.FC<GroupControlViewProps> = ({
               onClick={() => setModalTab('ai')}
               className={`flex-1 py-2 px-3 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 whitespace-nowrap ${
                 modalTab === 'ai'
-                  ? 'bg-[#151A1F] text-emerald-400 border border-emerald-500/30 shadow-xs'
-                  : 'text-zinc-400 hover:text-zinc-200'
+                  ? 'bg-sky-500/20 text-sky-400 border border-sky-400/40 shadow-[0_0_10px_rgba(14,165,233,0.2)]'
+                  : 'text-slate-400 hover:text-white'
               }`}
             >
               <MessageSquare className="w-3.5 h-3.5" />

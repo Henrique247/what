@@ -17,20 +17,20 @@ export const Button: React.FC<ButtonProps> = ({
   className = '',
   ...props
 }) => {
-  const baseClasses = "inline-flex items-center justify-center font-medium transition-colors focus:outline-none rounded-[4px] text-xs disabled:opacity-50 disabled:cursor-not-allowed select-none";
+  const baseClasses = "inline-flex items-center justify-center font-medium transition-all focus:outline-none rounded-xl text-xs disabled:opacity-50 disabled:cursor-not-allowed select-none active:scale-[0.98]";
 
   const sizeClasses = {
-    sm: "h-8 px-2.5 gap-1.5",
-    md: "h-9 px-3.5 gap-2",
-    lg: "h-10 px-4 gap-2 text-sm"
+    sm: "h-8 px-3 gap-1.5",
+    md: "h-9 px-4 gap-2",
+    lg: "h-10 px-5 gap-2 text-sm"
   };
 
   const variantClasses = {
-    primary: "bg-[#059669] hover:bg-[#047857] text-white border border-[#059669]",
-    secondary: "bg-[#16191E] hover:bg-[#1D2128] text-[#ECEED01] border border-[#2A2F37]",
-    danger: "bg-[#7F1D1D]/20 hover:bg-[#7F1D1D]/40 text-[#EF4444] border border-[#7F1D1D]/50",
-    ghost: "bg-transparent hover:bg-[#16191E] text-[#9DA4B0] hover:text-white border border-transparent",
-    outline: "bg-transparent hover:bg-[#16191E] text-[#9DA4B0] hover:text-white border border-[#2A2F37]"
+    primary: "bg-sky-500 hover:bg-sky-400 text-white shadow-[0_0_15px_rgba(14,165,233,0.35)] border border-sky-400/50",
+    secondary: "bg-[#0c1830] hover:bg-[#122347] text-slate-200 hover:text-white border border-[#1e355e]",
+    danger: "bg-rose-500/15 hover:bg-rose-500/25 text-rose-400 border border-rose-500/30",
+    ghost: "bg-transparent hover:bg-sky-500/10 text-slate-400 hover:text-sky-300 border border-transparent",
+    outline: "bg-transparent hover:bg-[#0c1830] text-slate-300 hover:text-white border border-[#1e355e]"
   };
 
   return (

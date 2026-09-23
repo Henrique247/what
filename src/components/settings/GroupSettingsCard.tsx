@@ -16,15 +16,15 @@ export const GroupSettingsCard: React.FC<GroupSettingsCardProps> = ({
   onNavigateToTab,
 }) => {
   return (
-    <div id="settings-groups" className="techstar-card p-5 sm:p-6 space-y-5">
-      <div className="flex items-center justify-between pb-3 border-b border-[#22282F]">
+    <div id="settings-groups" className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 sm:p-6 space-y-5 shadow-lg">
+      <div className="flex items-center justify-between pb-3 border-b border-[#142340]">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
             <Users className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">Comportamento em Grupos</h2>
-            <p className="text-xs text-zinc-400">Diretrizes de intervenção, menções e saudações coletivas</p>
+            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Comportamento em Grupos</h2>
+            <p className="text-xs text-slate-400">Diretrizes de intervenção, menções e saudações coletivas</p>
           </div>
         </div>
 
@@ -58,77 +58,50 @@ export const GroupSettingsCard: React.FC<GroupSettingsCardProps> = ({
         />
 
         {/* Cooldown entre respostas */}
-        <div className="p-4 rounded-xl bg-[#101418] border border-[#22282F] space-y-2">
+        <div className="space-y-1.5 p-4 rounded-xl bg-[#081021] border border-[#162a4d]">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-semibold text-zinc-200 flex items-center gap-1.5">
-              <Clock className="w-3.5 h-3.5 text-emerald-400" />
-              <span>Intervalo de Cooldown Entre Respostas em Grupos</span>
+            <label className="text-xs font-semibold text-white flex items-center gap-1.5">
+              <Clock className="w-4 h-4 text-sky-400" />
+              <span>Intervalo de Cooldown entre Mensagens no Grupo (Segundos)</span>
             </label>
-            <span className="text-xs font-mono text-emerald-400 font-bold">
-              {formData.responseCooldownSeconds || 3}s
-            </span>
+            <span className="text-xs font-mono text-sky-300 font-semibold">{formData.groupCooldownSeconds || 3}s</span>
           </div>
-          <p className="text-[11px] text-zinc-400">
-            Tempo mínimo de espera antes que o bot possa emitir nova resposta no mesmo grupo para evitar poluição visual.
+          <p className="text-[11px] text-slate-400">
+            Evita que o bot responda em rajadas consecutivas muito rápidas, tornando a interação mais humana.
           </p>
-          <div className="flex items-center gap-3 pt-1">
-            <input
-              type="range"
-              min={1}
-              max={30}
-              step={1}
-              value={formData.responseCooldownSeconds || 3}
-              onChange={(e) => onChange('responseCooldownSeconds', Number(e.target.value))}
-              className="w-full accent-emerald-500 cursor-pointer"
-            />
-            <span className="text-xs font-mono text-zinc-300 shrink-0">
-              {formData.responseCooldownSeconds || 3} seg
-            </span>
-          </div>
+          <input
+            type="range"
+            min={1}
+            max={30}
+            step={1}
+            value={formData.groupCooldownSeconds || 3}
+            onChange={(e) => onChange('groupCooldownSeconds', parseInt(e.target.value) || 3)}
+            className="w-full accent-sky-400"
+          />
         </div>
 
-        {/* Boas-Vindas em Grupos */}
+        {/* Boas-Vindas a Novos Membros no Grupo */}
         <Toggle
-          label="Mensagem de Boas-Vindas aos Novos Membros"
-          description="Envia automaticamente uma mensagem de recepção quando um participante entrar no grupo."
-          checked={formData.groupWelcomeEnabled === 1}
-          onChange={(val) => onChange('groupWelcomeEnabled', val ? 1 : 0)}
+          label="Mensagem de Boas-Vindas Automática para Novos Membros"
+          description="Saúda participantes que acabaram de entrar no grupo com uma mensagem personalizada."
+          checked={!!formData.groupWelcomeEnabled}
+          onChange={(val) => onChange('groupWelcomeEnabled', val)}
         />
 
-        {formData.groupWelcomeEnabled === 1 && (
-          <div className="space-y-1.5 pl-4 border-l-2 border-emerald-500/30">
-            <label className="text-xs font-medium text-zinc-300">
-              Texto de Boas-Vindas nos Grupos
-            </label>
+        {formData.groupWelcomeEnabled && (
+          <div className="space-y-1.5 pl-4 border-l-2 border-sky-400/40">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-medium text-slate-300">
+                Modelo da Mensagem de Boas-Vindas
+              </label>
+              <span className="text-[10px] text-slate-500 font-mono">Use @user e @group como tags</span>
+            </div>
             <textarea
               rows={2}
               value={formData.groupWelcomeMsg || ''}
               onChange={(e) => onChange('groupWelcomeMsg', e.target.value)}
-              placeholder="Bem-vindo(a) ao grupo! Leia as regras e sinta-se à vontade..."
-              className="w-full px-3.5 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-xs text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors resize-none leading-relaxed"
-            />
-          </div>
-        )}
-
-        {/* Mensagem de Saída de Grupos */}
-        <Toggle
-          label="Mensagem de Despedida ao Sair do Grupo"
-          description="Notifica o grupo quando um participante sair ou for removido."
-          checked={formData.groupExitEnabled === 1}
-          onChange={(val) => onChange('groupExitEnabled', val ? 1 : 0)}
-        />
-
-        {formData.groupExitEnabled === 1 && (
-          <div className="space-y-1.5 pl-4 border-l-2 border-emerald-500/30">
-            <label className="text-xs font-medium text-zinc-300">
-              Texto de Despedida (Grupos)
-            </label>
-            <textarea
-              rows={2}
-              value={formData.groupExitMsg || ''}
-              onChange={(e) => onChange('groupExitMsg', e.target.value)}
-              placeholder="Até breve! O participante deixou o grupo."
-              className="w-full px-3.5 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-xs text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors resize-none leading-relaxed"
+              placeholder="Ex: Olá @user, seja muito bem-vindo ao @group! Leia as regras fixadas."
+              className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all resize-none font-mono"
             />
           </div>
         )}

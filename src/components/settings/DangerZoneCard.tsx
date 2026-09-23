@@ -77,10 +77,10 @@ export const DangerZoneCard: React.FC<DangerZoneCardProps> = ({
 
   return (
     <>
-      <div id="settings-danger" className="techstar-card p-5 sm:p-6 border-rose-500/20 bg-rose-950/10 space-y-5">
+      <div id="settings-danger" className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-rose-500/30 p-5 sm:p-6 space-y-5 shadow-[0_0_20px_rgba(244,63,94,0.1)]">
         <div className="flex items-center justify-between pb-3 border-b border-rose-500/20">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400">
+            <div className="w-8 h-8 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-400 shadow-[0_0_10px_rgba(244,63,94,0.2)]">
               <AlertTriangle className="w-4 h-4" />
             </div>
             <div>
@@ -91,17 +91,17 @@ export const DangerZoneCard: React.FC<DangerZoneCardProps> = ({
             </div>
           </div>
 
-          <span className="text-[10px] text-rose-400 uppercase font-bold px-2 py-0.5 rounded bg-rose-500/20 border border-rose-500/30">
+          <span className="text-[10px] text-rose-400 uppercase font-bold px-2.5 py-0.5 rounded-full bg-rose-500/20 border border-rose-500/30 font-mono">
             Atenção Redobrada
           </span>
         </div>
 
         <div className="space-y-3">
           {/* Action 1: Desconectar WhatsApp */}
-          <div className="p-4 rounded-xl bg-[#101418] border border-[#22282F] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="p-4 rounded-xl bg-[#081021] border border-[#162a4d] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-zinc-200">Desconectar Sessão do WhatsApp</p>
-              <p className="text-[11px] text-zinc-400 mt-0.5">
+              <p className="text-xs font-semibold text-white">Desconectar Sessão do WhatsApp</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
                 Encerra a conexão WebSocket com o WhatsApp. O bot deixará de receber e responder mensagens.
               </p>
             </div>
@@ -118,17 +118,17 @@ export const DangerZoneCard: React.FC<DangerZoneCardProps> = ({
           </div>
 
           {/* Action 2: Restaurar configurações padrão */}
-          <div className="p-4 rounded-xl bg-[#101418] border border-[#22282F] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="p-4 rounded-xl bg-[#081021] border border-[#162a4d] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold text-zinc-200">Restaurar Configurações Padrão</p>
-              <p className="text-[11px] text-zinc-400 mt-0.5">
+              <p className="text-xs font-semibold text-white">Restaurar Configurações Padrão</p>
+              <p className="text-[11px] text-slate-400 mt-0.5">
                 Restaura os prompts, mensagens de boas-vindas e regras de moderação para os valores de fábrica.
               </p>
             </div>
             <Button
               variant="secondary"
               size="sm"
-              icon={<RotateCcw className="w-3.5 h-3.5 text-zinc-300" />}
+              icon={<RotateCcw className="w-3.5 h-3.5 text-slate-300" />}
               onClick={() => setResetModalOpen(true)}
               className="shrink-0"
             >
@@ -137,7 +137,7 @@ export const DangerZoneCard: React.FC<DangerZoneCardProps> = ({
           </div>
 
           {/* Action 3: Excluir Bot (Superadmin ou autorizado) */}
-          <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="p-4 rounded-xl bg-rose-950/20 border border-rose-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-[0_0_12px_rgba(244,63,94,0.1)]">
             <div>
               <p className="text-xs font-semibold text-rose-300">Excluir Esta Instância do Bot</p>
               <p className="text-[11px] text-rose-200/70 mt-0.5">

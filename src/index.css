@@ -2,31 +2,31 @@
 
 @layer base {
   :root {
-    /* Canvas Base */
-    --bg-canvas: #090A0C;
-    --bg-surface-1: #101216;
-    --bg-surface-2: #16191E;
-    --bg-surface-active: #1D2128;
+    /* Canvas Base - Midnight Cyber Dark */
+    --bg-canvas: #050913;
+    --bg-surface-1: #091122;
+    --bg-surface-2: #0e1933;
+    --bg-surface-active: #15264b;
 
-    /* Bordas e Divisores */
-    --border-subtle: #1E2228;
-    --border-default: #2A2F37;
-    --border-strong: #3A414D;
+    /* Bordas e Divisores Tecnológicos */
+    --border-subtle: #14223d;
+    --border-default: #1b3259;
+    --border-strong: #38bdf8;
 
     /* Tipografia e Contraste */
-    --text-primary: #ECEED01;
-    --text-secondary: #9DA4B0;
-    --text-muted: #626B79;
+    --text-primary: #ffffff;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
 
     /* Indicadores de Estado Operacional */
-    --status-online: #10B981;
-    --status-offline: #6B7280;
-    --status-error: #EF4444;
-    --status-warning: #F59E0B;
+    --status-online: #38bdf8;
+    --status-offline: #64748b;
+    --status-error: #f43f5e;
+    --status-warning: #fbbf24;
 
-    /* Ações / Marca */
-    --accent-primary: #059669;
-    --accent-hover: #047857;
+    /* Ações / Marca Neon Cyan */
+    --accent-primary: #0ea5e9;
+    --accent-hover: #38bdf8;
   }
 
   body {
@@ -34,6 +34,7 @@
     color: var(--text-primary);
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
   }
 
   code, pre, .font-mono {
@@ -45,11 +46,11 @@
 .panel {
   background-color: var(--bg-surface-1);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
+  border-radius: 14px;
 }
 
 .panel-header {
-  padding: 12px 16px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
@@ -60,66 +61,86 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 3px 9px;
+  border-radius: 9999px;
   font-size: 11px;
   font-weight: 500;
   font-family: 'JetBrains Mono', monospace;
 }
 
-/* Utilitários TECHSTAR Console */
+/* Moldura e Efeitos Neon Cyber do Layout */
+.neon-glow-border {
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  box-shadow: 0 0 35px -5px rgba(14, 165, 233, 0.3), inset 0 0 15px rgba(14, 165, 233, 0.05);
+}
+
+.cyber-card {
+  background: rgba(11, 19, 37, 0.85);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(30, 58, 95, 0.6);
+  border-radius: 16px;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.cyber-card:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 8px 30px -8px rgba(14, 165, 233, 0.15);
+}
+
 .techstar-card {
   background-color: var(--bg-surface-1);
   border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  transition: border-color 0.15s ease;
+  border-radius: 14px;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .techstar-card:hover {
-  border-color: var(--border-default);
+  border-color: rgba(56, 189, 248, 0.3);
+  box-shadow: 0 4px 20px -4px rgba(14, 165, 233, 0.1);
 }
 
 .techstar-card-secondary {
   background-color: var(--bg-surface-2);
   border: 1px solid var(--border-subtle);
-  border-radius: 4px;
+  border-radius: 10px;
 }
 
 .techstar-input {
-  background-color: var(--bg-surface-1);
+  background-color: #0b152b;
   border: 1px solid var(--border-default);
-  border-radius: 4px;
-  padding: 8px 12px;
-  color: #ECEED01;
+  border-radius: 10px;
+  padding: 8px 14px;
+  color: #ffffff;
   font-size: 13px;
-  transition: border-color 0.15s ease;
+  transition: all 0.2s ease;
 }
 
 .techstar-input:focus {
   outline: none;
-  border-color: var(--accent-primary);
+  border-color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
 }
 
 .techstar-badge-active {
-  background: rgba(16, 185, 129, 0.12);
-  color: #10B981;
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  border-radius: 4px;
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 9999px;
   font-family: 'JetBrains Mono', monospace;
 }
 
 .techstar-badge-inactive {
-  background: rgba(107, 114, 128, 0.12);
-  color: #9DA4B0;
-  border: 1px solid rgba(107, 114, 128, 0.2);
-  border-radius: 4px;
+  background: rgba(100, 116, 139, 0.15);
+  color: #94a3b8;
+  border: 1px solid rgba(100, 116, 139, 0.25);
+  border-radius: 9999px;
   font-family: 'JetBrains Mono', monospace;
 }
 
 /* Custom scrollbars */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
@@ -127,10 +148,10 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-default);
-  border-radius: 2px;
+  background: #192a47;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--border-strong);
+  background: #253e68;
 }

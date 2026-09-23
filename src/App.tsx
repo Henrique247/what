@@ -88,33 +88,79 @@ const AppContent: React.FC = () => {
         return;
       }
 
-      // Check if URL is /bot/:id or /manage/:id
-      const botMatch = path.match(/^\/(?:bot|manage)\/([^/]+)/);
-      if (botMatch && botMatch[1]) {
-        const botId = botMatch[1];
+      // Check if URL is /bot/:id (CLIENT PORTAL - ALWAYS ENFORCE PIN)
+      const clientBotMatch = path.match(/^\/bot\/([^/?#]+)/);
+      if (clientBotMatch && clientBotMatch[1]) {
+        const botId = clientBotMatch[1];
         setSelectedBotId(botId);
+        setIsAdminMode(false);
 
-        const botToken = localStorage.getItem(`bot_token_${botId}`) || tokenParam;
-        const hasAdminAuth = !!localStorage.getItem('techstar_admin_token');
-
-        if (!botToken && !hasAdminAuth) {
+        const sessionToken = sessionStorage.getItem(`bot_auth_${botId}`);
+        if (!sessionToken) {
+          // No active PIN session in this tab: prompt for PIN
           setCurrentView('bot-login');
           setLoading(false);
           return;
         }
 
         try {
-          const isAdmin = hasAdminAuth;
-          const botConfig = await api.getBotConfig(botId, botToken || undefined, isAdmin);
+          const botConfig = await api.getBotConfig(botId, sessionToken, false);
           setSelectedBot(botConfig);
-          setIsAdminMode(isAdmin);
-          if (botToken) setClientToken(botToken);
+          setClientToken(sessionToken);
+          setIsAdminMode(false);
           setCurrentView('manage');
         } catch (e: any) {
-          console.error('Erro ao carregar bot da URL:', e);
-          toast.error(e.message || 'Erro ao carregar bot solicitado.');
+          console.error('Sessão inválida ou PIN necessário:', e);
+          sessionStorage.removeItem(`bot_auth_${botId}`);
           setCurrentView('bot-login');
         } finally {
+          setLoading(false);
+        }
+        return;
+      }
+
+      // Check if URL is /manage/:id (ADMIN DIRECT ACCESS)
+      const manageMatch = path.match(/^\/manage\/([^/?#]+)/);
+      if (manageMatch && manageMatch[1]) {
+        const botId = manageMatch[1];
+        setSelectedBotId(botId);
+
+        const hasAdminAuth = !!localStorage.getItem('techstar_admin_token');
+        if (hasAdminAuth) {
+          try {
+            const botConfig = await api.getBotConfig(botId, undefined, true);
+            setSelectedBot(botConfig);
+            setIsAdminMode(true);
+            setCurrentView('manage');
+          } catch (e: any) {
+            console.error('Erro ao carregar bot como admin:', e);
+            toast.error(e.message || 'Erro ao carregar bot solicitado.');
+            setCurrentView('admin-login');
+          } finally {
+            setLoading(false);
+          }
+          return;
+        }
+
+        // If not logged as admin, redirect to client portal to request PIN
+        window.history.replaceState({}, '', `/bot/${botId}`);
+        const sessionToken = sessionStorage.getItem(`bot_auth_${botId}`);
+        if (sessionToken) {
+          try {
+            const botConfig = await api.getBotConfig(botId, sessionToken, false);
+            setSelectedBot(botConfig);
+            setClientToken(sessionToken);
+            setIsAdminMode(false);
+            setCurrentView('manage');
+          } catch {
+            sessionStorage.removeItem(`bot_auth_${botId}`);
+            setCurrentView('bot-login');
+          } finally {
+            setLoading(false);
+          }
+        } else {
+          setCurrentView('bot-login');
+          setIsAdminMode(false);
           setLoading(false);
         }
         return;
@@ -227,7 +273,9 @@ const AppContent: React.FC = () => {
         <BotLoginPage
           botId={selectedBotId}
           onLoginSuccess={async (token) => {
+            sessionStorage.setItem(`bot_auth_${selectedBotId}`, token);
             setClientToken(token);
+            setIsAdminMode(false);
             try {
               const botConfig = await api.getBotConfig(selectedBotId, token, false);
               setSelectedBot(botConfig);
@@ -249,7 +297,11 @@ const AppContent: React.FC = () => {
   }
 
   return (
-    <div className="min-h-screen bg-[#080A0C] text-[#F3F4F6] flex">
+    <div className="min-h-screen bg-[#050913] text-slate-100 flex relative overflow-x-hidden selection:bg-sky-500/30 selection:text-white">
+      {/* Ambient Cyber Neon Background Glows */}
+      <div className="pointer-events-none fixed top-[-10%] right-[-5%] w-[600px] h-[600px] bg-sky-500/10 blur-[140px] rounded-full z-0" />
+      <div className="pointer-events-none fixed bottom-[-10%] left-[20%] w-[500px] h-[500px] bg-blue-600/10 blur-[140px] rounded-full z-0" />
+
       {/* Sidebar Navigation */}
       <Sidebar
         currentView={currentView}
@@ -270,7 +322,7 @@ const AppContent: React.FC = () => {
       />
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 lg:pl-60">
+      <div className="flex-1 flex flex-col min-w-0 lg:pl-64 relative z-10">
         {/* Topbar Header */}
         <Topbar
           currentView={currentView}
@@ -284,7 +336,7 @@ const AppContent: React.FC = () => {
           onSelectBotTab={setActiveBotTab}
         />
 
-        {/* Scrollable View Content */}
+        {/* Scrollable View Content with Cyber Container Frame */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto">
           {currentView === 'dashboard' && (
             <DashboardPage

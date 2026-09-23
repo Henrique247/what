@@ -130,12 +130,28 @@
         "timestamp": { "type": "string", "format": "date-time" }
       },
       "required": ["botId", "groupId", "action", "timestamp"]
+    },
+    "BaileysAuth": {
+      "title": "BaileysAuth",
+      "description": "WhatsApp Baileys cryptographic session credentials and encryption keys for persistent auto-reconnection across redeploys",
+      "type": "object",
+      "properties": {
+        "fileName": { "type": "string" },
+        "rawContent": { "type": "string" },
+        "category": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["fileName", "rawContent"]
     }
   },
   "firestore": {
     "/bots/{botId}": {
       "schema": "Bot",
       "description": "Collection of bots"
+    },
+    "/bots/{botId}/baileys_auth/{keyId}": {
+      "schema": "BaileysAuth",
+      "description": "Cryptographic authentication keys and session state for WhatsApp Baileys socket persistence"
     },
     "/bots/{botId}/history/{historyId}": {
       "schema": "History",

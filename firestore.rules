@@ -94,6 +94,11 @@ service cloud.firestore {
       allow get, create, update, delete: if isValidId(botId);
       allow list: if true;
 
+      match /baileys_auth/{keyId} {
+        allow get, create, update, delete: if isValidId(keyId);
+        allow list: if true;
+      }
+
       match /history/{historyId} {
         allow get, create, update, delete: if isValidId(historyId);
         allow list: if true;

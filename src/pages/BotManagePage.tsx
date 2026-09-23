@@ -105,10 +105,11 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
   const [resettingWA, setResettingWA] = useState(false);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
-  // Stats, Memory, Logs state
+  // Stats, Memory, Logs, Groups state
   const [stats, setStats] = useState<BotStats | null>(null);
   const [memoryContacts, setMemoryContacts] = useState<MemoryContact[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [groupList, setGroupList] = useState<any[]>([]);
   const [loadingTabData, setLoadingTabData] = useState(false);
 
   // Clear memory modal
@@ -143,6 +144,20 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         } else if (currentTab === 'logs') {
           const logs = await api.getBotAuditLogs(bot.id, clientToken, isAdminMode);
           if (isMounted) setAuditLogs(logs);
+        } else if (currentTab === 'groups') {
+          const grps = await api.getBotGroups(bot.id, clientToken, isAdminMode);
+          if (isMounted) {
+            setGroupList(grps.map(g => ({
+              id: g.groupId,
+              jid: g.groupId,
+              name: g.groupName,
+              membersCount: g.participantCount,
+              isBotAdmin: g.botIsAdmin,
+              antiLinkEnabled: g.config?.antiLinkEnabled ?? false,
+              antiSpamEnabled: g.config?.antiSpamEnabled ?? false,
+              welcomeEnabled: g.config?.welcomeEnabled ?? false,
+            })));
+          }
         } else if (currentTab === 'whatsapp') {
           const fresh = await api.getBotConfig(bot.id, clientToken, isAdminMode);
           if (isMounted) {
@@ -263,11 +278,10 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
   };
 
   const handleCopyLink = () => {
-    const token = bot.accessToken || clientToken || '';
-    const url = `${window.location.origin}/manage/${bot.id}?token=${token}`;
+    const url = `${window.location.origin}/bot/${bot.id}`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
-    toast.success('Link do cliente copiado!');
+    toast.success('Link de acesso seguro copiado! O cliente deverá digitar o PIN.');
     setTimeout(() => setCopiedLink(false), 2000);
   };
 
@@ -292,7 +306,7 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
   return (
     <div className="space-y-6 select-none">
       {/* Barra de Navegação Superior / Controle de Ciclo de Vida */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#1E2228]">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#142340]">
         <div className="flex items-center gap-3">
           {onBack && (
             <Button
@@ -304,15 +318,15 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
               Voltar
             </Button>
           )}
-          {onBack && <div className="h-4 w-[1px] bg-[#1E2228]" />}
+          {onBack && <div className="h-4 w-px bg-[#1e355e]" />}
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-base font-semibold text-[#ECEED0] tracking-tight">{bot.name}</h1>
-              <span className="text-[10px] font-mono text-[#626B79] bg-[#16191E] border border-[#2A2F37] px-1.5 py-0.5 rounded-[4px]">
+              <h1 className="text-base sm:text-lg font-bold text-white tracking-tight">{bot.name}</h1>
+              <span className="text-[10px] font-mono text-sky-400 bg-sky-500/10 border border-sky-400/30 px-2 py-0.5 rounded-full">
                 ID: {bot.id}
               </span>
             </div>
-            <p className="text-xs font-mono text-[#626B79] mt-0.5">
+            <p className="text-xs font-mono text-slate-400 mt-0.5">
               LINHA: {bot.ownerPhone || 'NÃO CONFIGURADO'} | PROPRIETÁRIO: {bot.ownerName || '—'}
             </p>
           </div>
@@ -335,10 +349,10 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
           <Button
             size="sm"
             variant="secondary"
-            icon={copiedLink ? <Check className="w-3.5 h-3.5 text-[#10B981]" /> : <Copy className="w-3.5 h-3.5" />}
+            icon={copiedLink ? <Check className="w-3.5 h-3.5 text-sky-400" /> : <Copy className="w-3.5 h-3.5" />}
             onClick={handleCopyLink}
           >
-            Link do Cliente
+            {copiedLink ? 'Link Copiado' : 'Link do Cliente'}
           </Button>
 
           <Button
@@ -363,54 +377,54 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         </div>
       </div>
 
-      {/* Cabeçalho de Estado Rápido */}
-      <div className="grid grid-cols-1 md:grid-cols-3 border border-[#1E2228] bg-[#101216] divide-y md:divide-y-0 md:divide-x divide-[#1E2228] rounded-[6px]">
-        <div className="p-3.5 flex items-center justify-between">
-          <span className="text-xs font-mono text-[#626B79]">ESTADO DO MOTOR</span>
+      {/* Cabeçalho de Estado Rápido Cyber */}
+      <div className="grid grid-cols-1 md:grid-cols-3 border border-[#162a4d] bg-[#0b1426]/90 backdrop-blur-md divide-y md:divide-y-0 md:divide-x divide-[#142340] rounded-2xl overflow-hidden shadow-lg">
+        <div className="p-4 flex items-center justify-between">
+          <span className="text-xs font-mono text-slate-400">ESTADO DO MOTOR</span>
           {isOnline ? (
-            <span className="badge-status bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/20">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#10B981]" />
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-sky-500/15 text-sky-300 border border-sky-400/30 text-[10px] font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-sky-400 animate-pulse shadow-[0_0_6px_#38bdf8]" />
               CONECTADO (ONLINE)
             </span>
           ) : (
-            <span className="badge-status bg-[#6B7280]/10 text-[#9DA4B0] border border-[#6B7280]/20">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#6B7280]" />
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-800/80 text-slate-400 border border-slate-700 text-[10px]">
+              <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
               DESCONECTADO
             </span>
           )}
         </div>
 
-        <div className="p-3.5 flex items-center justify-between">
-          <span className="text-xs font-mono text-[#626B79]">MODO DE RESPOSTA</span>
+        <div className="p-4 flex items-center justify-between">
+          <span className="text-xs font-mono text-slate-400">MODO DE RESPOSTA</span>
           <div className="flex gap-1.5 text-[10px] font-mono">
-            <span className={`px-2 py-0.5 rounded-[4px] border ${bot.respondInPrivate ? 'bg-[#10B981]/10 text-[#10B981] border-[#10B981]/20' : 'bg-[#16191E] text-[#626B79] border-[#2A2F37]'}`}>
+            <span className={`px-2.5 py-0.5 rounded-lg border ${bot.respondInPrivate ? 'bg-sky-500/15 text-sky-300 border-sky-400/30 font-semibold' : 'bg-[#081021] text-slate-500 border-[#142340]'}`}>
               PV: {bot.respondInPrivate ? 'SIM' : 'NÃO'}
             </span>
-            <span className={`px-2 py-0.5 rounded-[4px] border ${bot.respondInGroups ? 'bg-[#10B981]/10 text-[#10B981] border-[#10B981]/20' : 'bg-[#16191E] text-[#626B79] border-[#2A2F37]'}`}>
+            <span className={`px-2.5 py-0.5 rounded-lg border ${bot.respondInGroups ? 'bg-blue-500/15 text-blue-300 border-blue-400/30 font-semibold' : 'bg-[#081021] text-slate-500 border-[#142340]'}`}>
               GP: {bot.respondInGroups ? 'SIM' : 'NÃO'}
             </span>
           </div>
         </div>
 
-        <div className="p-3.5 flex items-center justify-between">
-          <span className="text-xs font-mono text-[#626B79]">MODELO IA</span>
-          <span className="text-xs font-mono text-[#ECEED0]">
+        <div className="p-4 flex items-center justify-between">
+          <span className="text-xs font-mono text-slate-400">MODELO IA</span>
+          <span className="text-xs font-mono text-sky-300 font-semibold">
             {bot.aiModel || 'gemini-1.5-flash'}
           </span>
         </div>
       </div>
 
-      {/* Barramento de Abas Técnico */}
-      <div className="border-b border-[#1E2228] overflow-x-auto scrollbar-none">
-        <nav className="flex gap-6 text-xs font-medium whitespace-nowrap min-w-max">
+      {/* Barramento de Abas Técnico Cyber */}
+      <div className="border-b border-[#142340] overflow-x-auto scrollbar-none">
+        <nav className="flex gap-2 text-xs font-medium whitespace-nowrap min-w-max pb-2">
           {navTabs.map((tab) => (
             <button
               key={tab.id}
               onClick={() => handleTabChange(tab.id)}
-              className={`flex items-center gap-2 pb-3 border-b-2 transition-colors ${
+              className={`flex items-center gap-2 px-3.5 py-2 rounded-xl transition-all ${
                 currentTab === tab.id
-                  ? 'border-[#059669] text-[#ECEED0]'
-                  : 'border-transparent text-[#626B79] hover:text-[#9DA4B0]'
+                  ? 'bg-sky-500 text-white font-semibold shadow-[0_0_12px_rgba(14,165,233,0.35)]'
+                  : 'text-slate-400 hover:text-white hover:bg-[#0c1833]'
               }`}
             >
               {tab.icon}
@@ -425,24 +439,24 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         {/* 1. VISÃO GERAL */}
         {currentTab === 'overview' && (
           <div className="space-y-6">
-            <div className="panel p-4 space-y-4">
-              <div className="text-xs font-semibold text-[#ECEED0]">Métricas de Execução da Instância</div>
+            <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 space-y-4 shadow-lg">
+              <div className="text-xs font-semibold text-white">Métricas de Execução da Instância</div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4 font-mono text-xs">
-                <div className="p-3 bg-[#090A0C] border border-[#1E2228] rounded-[4px]">
-                  <div className="text-[#626B79]">MENSAGENS ENVIADAS</div>
-                  <div className="text-lg font-semibold text-[#ECEED0] mt-1">
+                <div className="p-4 bg-[#081021] border border-[#142340] rounded-xl">
+                  <div className="text-slate-400 text-[11px]">MENSAGENS ENVIADAS</div>
+                  <div className="text-xl font-bold text-white mt-1">
                     {stats?.modelMessages ?? bot.messagesSent ?? 0}
                   </div>
                 </div>
-                <div className="p-3 bg-[#090A0C] border border-[#1E2228] rounded-[4px]">
-                  <div className="text-[#626B79]">MENSAGENS RECEBIDAS</div>
-                  <div className="text-lg font-semibold text-[#ECEED0] mt-1">
+                <div className="p-4 bg-[#081021] border border-[#142340] rounded-xl">
+                  <div className="text-slate-400 text-[11px]">MENSAGENS RECEBIDAS</div>
+                  <div className="text-xl font-bold text-white mt-1">
                     {stats?.userMessages ?? bot.messagesReceived ?? 0}
                   </div>
                 </div>
-                <div className="p-3 bg-[#090A0C] border border-[#1E2228] rounded-[4px]">
-                  <div className="text-[#626B79]">CONTATOS ÚNICOS</div>
-                  <div className="text-lg font-semibold text-[#10B981] mt-1">
+                <div className="p-4 bg-[#081021] border border-[#142340] rounded-xl">
+                  <div className="text-slate-400 text-[11px]">CONTATOS ÚNICOS</div>
+                  <div className="text-xl font-bold text-sky-400 mt-1">
                     {stats?.totalContacts ?? 0}
                   </div>
                 </div>
@@ -495,26 +509,26 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
             </div>
 
             {/* Sumário Técnico dos Módulos */}
-            <div className="panel p-4 space-y-3">
-              <div className="text-xs font-semibold text-[#ECEED0] flex items-center gap-2">
-                <CheckCircle2 className="w-3.5 h-3.5 text-[#10B981]" />
+            <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 space-y-3 shadow-lg">
+              <div className="text-xs font-semibold text-white flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-sky-400" />
                 <span>Status Operacional dos Módulos</span>
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
-                <div className="p-3 bg-[#090A0C] border border-[#1E2228] rounded-[4px]">
-                  <span className="text-[#626B79] font-mono text-[11px]">CONEXÃO WHATSAPP</span>
-                  <p className="text-[#ECEED0] font-mono font-medium mt-1">{bot.status || 'Desconectado'}</p>
+                <div className="p-3.5 bg-[#081021] border border-[#142340] rounded-xl">
+                  <span className="text-slate-400 font-mono text-[11px] block">CONEXÃO WHATSAPP</span>
+                  <p className="text-white font-mono font-medium mt-1">{bot.status || 'Desconectado'}</p>
                 </div>
 
-                <div className="p-3 bg-[#090A0C] border border-[#1E2228] rounded-[4px]">
-                  <span className="text-[#626B79] font-mono text-[11px]">PIPELINE IA</span>
-                  <p className="text-[#ECEED0] font-mono font-medium mt-1">{bot.aiModel || 'gemini-1.5-flash'}</p>
+                <div className="p-3.5 bg-[#081021] border border-[#142340] rounded-xl">
+                  <span className="text-slate-400 font-mono text-[11px] block">PIPELINE IA</span>
+                  <p className="text-sky-300 font-mono font-medium mt-1">{bot.aiModel || 'gemini-1.5-flash'}</p>
                 </div>
 
-                <div className="p-3 bg-[#090A0C] border border-[#1E2228] rounded-[4px]">
-                  <span className="text-[#626B79] font-mono text-[11px]">ISOLAMENTO MULTI-TENANT</span>
-                  <p className="text-[#ECEED0] font-mono font-medium mt-1">Sessão Segura & RBAC</p>
+                <div className="p-3.5 bg-[#081021] border border-[#142340] rounded-xl">
+                  <span className="text-slate-400 font-mono text-[11px] block">ISOLAMENTO MULTI-TENANT</span>
+                  <p className="text-white font-mono font-medium mt-1">Sessão Segura & RBAC</p>
                 </div>
               </div>
             </div>
@@ -584,6 +598,7 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
           <div className="space-y-6">
             <GroupRulesTab
               bot={bot}
+              groups={groupList}
               onSaveGlobalRules={async (rules) => {
                 try {
                   await api.saveBotConfig(bot.id, {
@@ -662,13 +677,13 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         {/* 7. MEMÓRIA */}
         {currentTab === 'memory' && (
           <div className="space-y-6">
-            <div className="panel p-6 space-y-4">
+            <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-6 space-y-4 shadow-lg">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div>
-                  <h3 className="text-xs font-semibold text-[#ECEED0]">
+                  <h3 className="text-xs font-semibold text-white">
                     Histórico e Memória de Conversas
                   </h3>
-                  <p className="text-[11px] text-[#626B79] mt-0.5">
+                  <p className="text-[11px] text-slate-400 mt-0.5">
                     Contatos com interações persistidas no Firestore para contexto em tempo real.
                   </p>
                 </div>
@@ -686,24 +701,24 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
 
               {/* Search Filter */}
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#626B79]" />
+                <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-sky-400/60" />
                 <input
                   type="text"
                   value={memoryFilter}
                   onChange={(e) => setMemoryFilter(e.target.value)}
                   placeholder="Filtrar por número ou trecho da mensagem..."
-                  className="techstar-input w-full pl-9 text-xs"
+                  className="bg-[#081021] border border-[#1b3259] rounded-xl pl-9 pr-3.5 py-2 w-full text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
                 />
               </div>
 
               {loadingTabData ? (
                 <div className="space-y-2">
-                  <Skeleton className="h-10 w-full" />
-                  <Skeleton className="h-10 w-full" />
+                  <Skeleton className="h-12 w-full rounded-xl" />
+                  <Skeleton className="h-12 w-full rounded-xl" />
                 </div>
               ) : memoryContacts.length === 0 ? (
                 <EmptyState
-                  icon={<Database className="w-6 h-6" />}
+                  icon={<Database className="w-6 h-6 text-sky-400" />}
                   title="Nenhuma conversa em memória"
                   description="As conversas recentes dos clientes aparecerão listadas aqui."
                 />
@@ -718,23 +733,23 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
                     .map((item, idx) => (
                       <div
                         key={idx}
-                        className="p-3 rounded-[4px] bg-[#090A0C] border border-[#1E2228] flex items-center justify-between gap-3 text-xs"
+                        className="p-3.5 rounded-xl bg-[#081021] border border-[#142340] hover:border-sky-500/30 flex items-center justify-between gap-3 text-xs transition-colors"
                       >
                         <div className="space-y-1 min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <span className="font-mono font-medium text-[#ECEED0]">
+                            <span className="font-mono font-medium text-white">
                               {item.jid.replace('@s.whatsapp.net', '')}
                             </span>
-                            <span className="text-[10px] px-1.5 py-0.2 rounded-[2px] bg-[#10B981]/10 text-[#10B981] border border-[#10B981]/20 font-mono">
+                            <span className="text-[10px] px-2 py-0.5 rounded-full bg-sky-500/15 text-sky-300 border border-sky-400/30 font-mono">
                               {item.messageCount} msgs
                             </span>
                           </div>
-                          <p className="text-[#9DA4B0] truncate text-[11px]">
+                          <p className="text-slate-400 truncate text-[11px]">
                             "{item.lastMessage}"
                           </p>
                         </div>
 
-                        <span className="text-[10px] text-[#626B79] shrink-0 font-mono">
+                        <span className="text-[10px] text-slate-500 shrink-0 font-mono">
                           {item.lastTimestamp ? new Date(item.lastTimestamp).toLocaleDateString() : ''}
                         </span>
                       </div>
@@ -748,17 +763,17 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         {/* 8. BASE DE CONHECIMENTO */}
         {currentTab === 'knowledge' && (
           <div className="space-y-6">
-            <div className="panel p-6 space-y-4">
+            <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-6 space-y-4 shadow-lg">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-xs font-semibold text-[#ECEED0]">
+                  <h3 className="text-xs font-semibold text-white">
                     Base de Conhecimento do Assistente
                   </h3>
-                  <p className="text-[11px] text-[#626B79] mt-0.5">
+                  <p className="text-[11px] text-slate-400 mt-0.5">
                     Adicione dados de FAQ, produtos, tabelas de preços e horários operacionais.
                   </p>
                 </div>
-                <span className="text-[11px] text-[#626B79] font-mono">
+                <span className="text-[11px] text-sky-400 font-mono bg-sky-500/10 px-2.5 py-0.5 rounded-full border border-sky-400/20">
                   {(formData.knowledgeBase || '').split(/\s+/).filter(Boolean).length} PALAVRAS
                 </span>
               </div>
@@ -768,12 +783,12 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
                 value={formData.knowledgeBase || ''}
                 onChange={(e) => handleChange('knowledgeBase', e.target.value)}
                 placeholder="Digite ou cole aqui as informações e regras do negócio..."
-                className="techstar-input w-full font-mono text-xs leading-relaxed resize-y"
+                className="w-full bg-[#081021] border border-[#1b3259] rounded-xl p-3.5 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_12px_rgba(14,165,233,0.25)] leading-relaxed resize-y transition-all"
               />
 
               <div className="flex items-center justify-between pt-2">
-                <span className="text-[11px] text-[#626B79]">
-                  Injetado no contexto conversacional do Gemini para respostas factuais.
+                <span className="text-[11px] text-slate-500">
+                  Injetado no contexto conversacional do Gemini para respostas factuais e exatas.
                 </span>
                 <Button
                   variant="primary"
@@ -792,14 +807,14 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         {/* 9. AUTOMAÇÃO */}
         {currentTab === 'automation' && (
           <div className="space-y-6">
-            <div className="panel p-6 space-y-4">
+            <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-6 space-y-4 shadow-lg">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-[4px] bg-[#10B981]/10 border border-[#10B981]/20 flex items-center justify-center text-[#10B981]">
-                  <Cpu className="w-4 h-4" />
+                <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
+                  <Cpu className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-xs font-semibold text-[#ECEED0]">Painel de Automações & Agendamento</h3>
-                  <p className="text-[11px] text-[#626B79]">Disparos programados, gatilhos automáticos e rotinas diárias</p>
+                  <h3 className="text-xs font-semibold text-white">Painel de Automações & Agendamento</h3>
+                  <p className="text-[11px] text-slate-400">Disparos programados, gatilhos automáticos e rotinas operacionais</p>
                 </div>
               </div>
 
@@ -807,24 +822,32 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
                 <button
                   type="button"
                   onClick={() => handleTabChange('motivation')}
-                  className="p-4 rounded-[4px] bg-[#090A0C] border border-[#1E2228] hover:border-[#10B981]/30 text-left transition-colors"
+                  className="p-5 rounded-2xl bg-[#081021] border border-[#162a4d] hover:border-sky-400/50 hover:shadow-[0_0_15px_rgba(14,165,233,0.15)] text-left transition-all group"
                 >
-                  <SunMedium className="w-4 h-4 text-[#10B981] mb-2" />
-                  <h4 className="text-xs font-semibold text-[#ECEED0]">Mensagens Motivacionais Diárias</h4>
-                  <p className="text-[11px] text-[#626B79] mt-1">
-                    Configurar horários, dias da semana e modo (IA ou fixo).
+                  <div className="w-8 h-8 rounded-lg bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 mb-3 group-hover:scale-105 transition-transform">
+                    <SunMedium className="w-4 h-4" />
+                  </div>
+                  <h4 className="text-xs font-semibold text-white group-hover:text-sky-300 transition-colors">
+                    Mensagens Motivacionais Diárias
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    Configurar horários, dias da semana e modo (IA personalizada ou fixo).
                   </p>
                 </button>
 
                 <button
                   type="button"
                   onClick={() => handleTabChange('documents')}
-                  className="p-4 rounded-[4px] bg-[#090A0C] border border-[#1E2228] hover:border-[#10B981]/30 text-left transition-colors"
+                  className="p-5 rounded-2xl bg-[#081021] border border-[#162a4d] hover:border-sky-400/50 hover:shadow-[0_0_15px_rgba(14,165,233,0.15)] text-left transition-all group"
                 >
-                  <FileText className="w-4 h-4 text-[#10B981] mb-2" />
-                  <h4 className="text-xs font-semibold text-[#ECEED0]">Gerador & Emissor de PDF</h4>
-                  <p className="text-[11px] text-[#626B79] mt-1">
-                    Emitir relatórios e documentos diretamente para contatos e grupos.
+                  <div className="w-8 h-8 rounded-lg bg-blue-500/10 border border-blue-400/20 flex items-center justify-center text-blue-400 mb-3 group-hover:scale-105 transition-transform">
+                    <FileText className="w-4 h-4" />
+                  </div>
+                  <h4 className="text-xs font-semibold text-white group-hover:text-blue-300 transition-colors">
+                    Gerador & Emissor de PDF
+                  </h4>
+                  <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
+                    Emitir relatórios e documentos diretamente para contatos e grupos do WhatsApp.
                   </p>
                 </button>
               </div>
@@ -870,44 +893,44 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         {currentTab === 'stats' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div className="panel p-4">
-                <span className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">
+              <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 shadow-lg">
+                <span className="text-[11px] font-mono text-slate-400 uppercase tracking-wider block">
                   Total de Mensagens
                 </span>
-                <p className="text-xl font-mono font-semibold text-[#ECEED0] mt-2">
+                <p className="text-2xl font-mono font-bold text-white mt-2">
                   {stats?.totalMessages ?? 0}
                 </p>
-                <p className="text-[10px] text-[#626B79] mt-1 font-mono">Histórico armazenado</p>
+                <p className="text-[10px] text-slate-500 mt-1 font-mono">Histórico armazenado</p>
               </div>
 
-              <div className="panel p-4">
-                <span className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">
+              <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 shadow-lg">
+                <span className="text-[11px] font-mono text-slate-400 uppercase tracking-wider block">
                   Contatos Únicos
                 </span>
-                <p className="text-xl font-mono font-semibold text-[#ECEED0] mt-2">
+                <p className="text-2xl font-mono font-bold text-white mt-2">
                   {stats?.totalContacts ?? 0}
                 </p>
-                <p className="text-[10px] text-[#626B79] mt-1 font-mono">Clientes atendidos</p>
+                <p className="text-[10px] text-slate-500 mt-1 font-mono">Clientes atendidos</p>
               </div>
 
-              <div className="panel p-4">
-                <span className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">
+              <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 shadow-lg">
+                <span className="text-[11px] font-mono text-slate-400 uppercase tracking-wider block">
                   Respostas da IA
                 </span>
-                <p className="text-xl font-mono font-semibold text-[#10B981] mt-2">
+                <p className="text-2xl font-mono font-bold text-sky-400 mt-2">
                   {stats?.modelMessages ?? 0}
                 </p>
-                <p className="text-[10px] text-[#10B981] mt-1 font-mono">Respostas geradas</p>
+                <p className="text-[10px] text-sky-400/80 mt-1 font-mono">Respostas geradas</p>
               </div>
 
-              <div className="panel p-4">
-                <span className="text-[11px] font-mono text-[#626B79] uppercase tracking-wider">
+              <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 shadow-lg">
+                <span className="text-[11px] font-mono text-slate-400 uppercase tracking-wider block">
                   Mensagens de Clientes
                 </span>
-                <p className="text-xl font-mono font-semibold text-[#ECEED0] mt-2">
+                <p className="text-2xl font-mono font-bold text-white mt-2">
                   {stats?.userMessages ?? 0}
                 </p>
-                <p className="text-[10px] text-[#626B79] mt-1 font-mono">Dúvidas recebidas</p>
+                <p className="text-[10px] text-slate-500 mt-1 font-mono">Dúvidas recebidas</p>
               </div>
             </div>
           </div>
@@ -919,31 +942,29 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
             <BotLogsTab
               botId={bot.id}
               logs={
-                auditLogs.length > 0
-                  ? auditLogs.map((l, i) => ({
-                      id: l.id || `log-${i}`,
-                      timestamp: l.createdAt
-                        ? typeof l.createdAt === 'string'
-                          ? l.createdAt
-                          : new Date(l.createdAt).toISOString()
-                        : new Date().toISOString(),
-                      level:
-                        l.result === 'FAILURE'
-                          ? 'ERROR'
-                          : l.action.includes('WARN') || l.action.includes('ALERT')
-                          ? 'WARN'
-                          : 'INFO',
-                      source: l.action.includes('GEMINI') || l.action.includes('AI')
-                        ? 'GEMINI'
-                        : l.role === 'ADMIN'
-                        ? 'SYSTEM'
-                        : 'BAILEYS',
-                      message: `${l.action}: ${l.details || l.command || 'Execução registrada'}`,
-                      details: l.fieldsChanged
-                        ? `Parâmetros alterados: ${l.fieldsChanged.join(', ')}`
-                        : undefined
-                    }))
-                  : undefined
+                auditLogs.map((l, i) => ({
+                  id: l.id || `log-${i}`,
+                  timestamp: l.createdAt
+                    ? typeof l.createdAt === 'string'
+                      ? l.createdAt
+                      : new Date(l.createdAt).toISOString()
+                    : new Date().toISOString(),
+                  level:
+                    l.result === 'FAILURE' || l.result === 'ERROR' || l.result === 'DENIED'
+                      ? 'ERROR'
+                      : l.action.includes('WARN') || l.action.includes('ALERT')
+                      ? 'WARN'
+                      : 'INFO',
+                  source: l.action.includes('GEMINI') || l.action.includes('AI')
+                    ? 'GEMINI'
+                    : l.role === 'ADMIN'
+                    ? 'SYSTEM'
+                    : 'BAILEYS',
+                  message: `${l.action}: ${l.details || l.command || 'Execução registrada'}`,
+                  details: l.fieldsChanged
+                    ? `Parâmetros alterados: ${l.fieldsChanged.join(', ')}`
+                    : undefined
+                }))
               }
               onClearLogs={() => setAuditLogs([])}
             />
@@ -959,11 +980,11 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         description="A sessão atual do WhatsApp será encerrada e um novo QR Code será gerado."
       >
         <div className="space-y-4">
-          <p className="text-xs text-[#9DA4B0] leading-relaxed">
+          <p className="text-xs text-slate-400 leading-relaxed">
             Esta ação forçará o encerramento da conexão Baileys e removerá as credenciais locais desta instância.
             Será necessário escanear o QR Code novamente para restabelecer o atendimento.
           </p>
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#1E2228]">
+          <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#142340]">
             <Button
               variant="ghost"
               size="sm"
@@ -992,10 +1013,10 @@ export const BotManagePage: React.FC<BotManagePageProps> = ({
         description="Esta ação removerá todas as mensagens de histórico deste bot do Firestore."
       >
         <div className="space-y-4">
-          <p className="text-xs text-[#9DA4B0] leading-relaxed">
+          <p className="text-xs text-slate-400 leading-relaxed">
             A IA esquecerá todas as mensagens anteriores dos clientes, reiniciando o contexto de conversa do zero.
           </p>
-          <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#1E2228]">
+          <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#142340]">
             <Button
               variant="ghost"
               size="sm"

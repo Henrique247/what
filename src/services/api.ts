@@ -152,22 +152,16 @@ class ApiService {
 
   async requestPairingCode(botId: string, phoneNumber: string, token?: string, isAdmin: boolean = true): Promise<string> {
     const url = token ? `/api/bot/${botId}/pairing-code?token=${encodeURIComponent(token)}` : `/api/bot/${botId}/pairing-code`;
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: this.getHeaders(token, isAdmin),
-        body: JSON.stringify({ phoneNumber })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.code) return data.code;
-      }
-    } catch {}
-
-    // Clean phone and generate standard 8-character pairing code representation
-    const part1 = Math.random().toString(36).substring(2, 6).toUpperCase();
-    const part2 = Math.random().toString(36).substring(2, 6).toUpperCase();
-    return `${part1}-${part2}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: this.getHeaders(token, isAdmin),
+      body: JSON.stringify({ phoneNumber })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.code) {
+      throw new Error(data.error || 'Falha ao solicitar código de emparelhamento no WhatsApp.');
+    }
+    return data.code;
   }
 
   async disconnectBotSession(botId: string, token?: string, isAdmin: boolean = true): Promise<{ success: boolean; status: string }> {
@@ -481,6 +475,14 @@ class ApiService {
       throw new Error(data.error || 'Falha ao enviar PDF pelo WhatsApp.');
     }
     return data;
+  }
+
+  async resetWhatsAppSession(botId: string, token?: string, isAdmin: boolean = false): Promise<{ status: string }> {
+    return this.resetBotSession(botId, token, isAdmin);
+  }
+
+  async generatePdfDocument(botId: string, pdfOptions: any, token?: string, isAdmin: boolean = false): Promise<Blob> {
+    return this.generatePdf(botId, pdfOptions, token, isAdmin);
   }
 }
 

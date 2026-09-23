@@ -14,92 +14,95 @@ export const TechnicalInfoCard: React.FC<TechnicalInfoCardProps> = ({
   isAdminMode = false,
 }) => {
   return (
-    <div id="settings-info" className="techstar-card p-5 sm:p-6 space-y-5">
-      <div className="flex items-center justify-between pb-3 border-b border-[#22282F]">
+    <div id="settings-info" className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 sm:p-6 space-y-5 shadow-lg">
+      <div className="flex items-center justify-between pb-3 border-b border-[#142340]">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
             <Info className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">
+            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
               Informações Técnicas do Bot
             </h2>
-            <p className="text-xs text-zinc-400">Metadados operacionais e parâmetros da infraestrutura</p>
+            <p className="text-xs text-slate-400">Metadados operacionais e parâmetros da infraestrutura</p>
           </div>
         </div>
 
-        <span className="text-[10px] text-zinc-400 font-mono px-2 py-0.5 rounded bg-[#101418] border border-[#22282F]">
+        <span className="text-[10px] text-sky-300 font-mono px-2.5 py-0.5 rounded-full bg-sky-500/10 border border-sky-400/20">
           v2.4.0 SaaS
         </span>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3 text-xs">
         {/* Bot ID */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F] col-span-2 sm:col-span-1">
-          <span className="text-[10px] text-zinc-500 uppercase font-semibold flex items-center gap-1.5">
-            <Layers className="w-3 h-3 text-emerald-400" />
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d] col-span-2 sm:col-span-1">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold flex items-center gap-1.5">
+            <Layers className="w-3 h-3 text-sky-400" />
             <span>ID da Instância</span>
           </span>
-          <p className="font-mono text-zinc-200 mt-1 truncate font-medium">{bot.id}</p>
+          <p className="font-mono text-white mt-1 truncate font-medium">{bot.id}</p>
         </div>
 
         {/* Plano */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F]">
-          <span className="text-[10px] text-zinc-500 uppercase font-semibold flex items-center gap-1.5">
-            <Shield className="w-3 h-3 text-emerald-400" />
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d]">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold flex items-center gap-1.5">
+            <Shield className="w-3 h-3 text-sky-400" />
             <span>Plano Comercial</span>
           </span>
-          <p className="text-emerald-400 font-bold mt-1 uppercase">{bot.plan || 'PRO'}</p>
+          <p className="text-sky-400 font-bold mt-1 uppercase font-mono">{bot.plan || 'PRO'}</p>
         </div>
 
         {/* Grupos Vinculados */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F]">
-          <span className="text-[10px] text-zinc-500 uppercase font-semibold flex items-center gap-1.5">
-            <Users className="w-3 h-3 text-emerald-400" />
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d]">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold flex items-center gap-1.5">
+            <Users className="w-3 h-3 text-sky-400" />
             <span>Grupos Sincronizados</span>
           </span>
-          <p className="text-zinc-200 font-semibold mt-1">
+          <p className="text-white font-semibold mt-1 font-mono">
             {stats?.groupCount ?? 'Sincronizado'}
           </p>
         </div>
 
         {/* Grupos Admin */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F]">
-          <span className="text-[10px] text-zinc-500 uppercase font-semibold flex items-center gap-1.5">
-            <ShieldCheck className="w-3 h-3 text-emerald-400" />
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d]">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold flex items-center gap-1.5">
+            <ShieldCheck className="w-3 h-3 text-sky-400" />
             <span>Como Administrador</span>
           </span>
-          <p className="text-emerald-400 font-semibold mt-1">
-            {stats?.adminGroupCount ? `${stats.adminGroupCount} grupos` : 'Ativo'}
+          <p className="text-white font-semibold mt-1 font-mono">
+            {stats?.adminGroupCount ?? 'Verificado'}
           </p>
         </div>
 
-        {/* Armazenamento */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F]">
-          <span className="text-[10px] text-zinc-500 uppercase font-semibold flex items-center gap-1.5">
-            <Database className="w-3 h-3 text-emerald-400" />
-            <span>Persistência</span>
-          </span>
-          <p className="text-zinc-300 font-medium mt-1">Google Firestore</p>
+        {/* Modelo IA */}
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d]">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold">Motor IA</span>
+          <p className="font-mono text-white mt-1 truncate font-medium">
+            {bot.aiModel || 'gemini-1.5-flash'}
+          </p>
         </div>
 
-        {/* Motor Baileys */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F]">
-          <span className="text-[10px] text-zinc-500 uppercase font-semibold flex items-center gap-1.5">
-            <Server className="w-3 h-3 text-emerald-400" />
-            <span>Conector WhatsApp</span>
-          </span>
-          <p className="text-zinc-300 font-medium mt-1">Baileys Multi-Device</p>
+        {/* Baileys Session */}
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d]">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold">Motor WhatsApp</span>
+          <p className="font-mono text-sky-300 mt-1 truncate font-medium">
+            Baileys Multi-Device
+          </p>
         </div>
 
-        {/* Isolamento Multitenant */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F] col-span-2">
-          <span className="text-[10px] text-zinc-500 uppercase font-semibold flex items-center gap-1.5">
-            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-            <span>Segurança Multitenant</span>
-          </span>
-          <p className="text-zinc-400 font-medium mt-1 text-[11px] leading-snug">
-            Isolamento estrito de dados por ID de instância com validação de permissões RBAC no backend.
+        {/* Firestore Persistence */}
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d]">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold">Banco de Dados</span>
+          <p className="font-mono text-white mt-1 truncate font-medium">
+            Google Firestore
+          </p>
+        </div>
+
+        {/* Multi-Tenant Isolation */}
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d]">
+          <span className="text-[10px] text-slate-500 uppercase font-semibold">Isolamento</span>
+          <p className="font-mono text-sky-400 mt-1 truncate font-medium">
+            SaaS Rígido
           </p>
         </div>
       </div>

@@ -86,12 +86,22 @@ export interface BotSummaryStat {
   contactsCount: number;
 }
 
+export interface WeeklyDataPoint {
+  day: string;
+  value: number;
+  count: string;
+  isPeak?: boolean;
+}
+
 export interface AdminStats {
   totalBots: number;
   onlineBots: number;
   offlineBots: number;
   totalMessages: number;
+  totalMessagesProcessed?: number;
   totalUsers: number;
+  totalTasksCount?: number;
+  totalGroupsConfigured?: number;
   botStats: BotSummaryStat[];
   recentActivity: AuditLog[];
   systemMetrics?: {
@@ -103,6 +113,10 @@ export interface AdminStats {
   };
   errorLogsCount?: number;
   aiSuccessRate?: string;
+  avgLatencyMs?: number;
+  deliveryRate?: number;
+  tokensPerMin?: string;
+  weeklyData?: WeeklyDataPoint[];
 }
 
 export interface BotStats {

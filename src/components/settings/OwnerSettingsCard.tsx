@@ -17,20 +17,20 @@ export const OwnerSettingsCard: React.FC<OwnerSettingsCardProps> = ({
   const isVerified = formData.firstAccessCompleted || formData.ownerVerificationStatus === 'VERIFIED';
 
   return (
-    <div id="settings-owner" className="techstar-card p-5 sm:p-6 space-y-5">
-      <div className="flex items-center justify-between pb-3 border-b border-[#22282F]">
+    <div id="settings-owner" className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 sm:p-6 space-y-5 shadow-lg">
+      <div className="flex items-center justify-between pb-3 border-b border-[#142340]">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
             <User className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">Proprietário do Bot</h2>
-            <p className="text-xs text-zinc-400">Identificação e privilégios do dono do bot</p>
+            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Proprietário do Bot</h2>
+            <p className="text-xs text-slate-400">Identificação e privilégios do dono do bot</p>
           </div>
         </div>
 
         <Badge
-          variant={isVerified ? 'emerald' : 'amber'}
+          variant={isVerified ? 'cyan' : 'amber'}
           dot={isVerified}
         >
           {isVerified ? 'Verificado' : 'Pendente de Verificação'}
@@ -40,7 +40,7 @@ export const OwnerSettingsCard: React.FC<OwnerSettingsCardProps> = ({
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Nome do Proprietário */}
         <div className="space-y-1.5">
-          <label className="text-xs font-medium text-zinc-300">
+          <label className="text-xs font-medium text-slate-300">
             Nome Completo do Proprietário
           </label>
           <input
@@ -48,15 +48,15 @@ export const OwnerSettingsCard: React.FC<OwnerSettingsCardProps> = ({
             value={formData.ownerName || ''}
             onChange={(e) => onChange('ownerName', e.target.value)}
             placeholder="Ex: Mendes Tech"
-            className="w-full px-3.5 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors"
+            className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
           />
         </div>
 
         {/* Número de WhatsApp */}
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
-            <label className="text-xs font-medium text-zinc-300">Número de WhatsApp (Dono)</label>
-            <span className="text-[10px] text-amber-400 flex items-center gap-1">
+            <label className="text-xs font-medium text-slate-300">Número de WhatsApp (Dono)</label>
+            <span className="text-[10px] text-amber-300 flex items-center gap-1 font-mono">
               <AlertCircle className="w-3 h-3" /> Alteração requer verificação
             </span>
           </div>
@@ -68,39 +68,29 @@ export const OwnerSettingsCard: React.FC<OwnerSettingsCardProps> = ({
                 onChange('ownerNumber', e.target.value);
                 onChange('ownerPhone', e.target.value);
               }}
-              placeholder="Ex: 244942272074"
-              className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors font-mono"
+              placeholder="Ex: 244923000000"
+              className="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 font-mono focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
             />
-            <Phone className="w-4 h-4 text-zinc-500 absolute left-3 top-2.5" />
+            <Phone className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
           </div>
         </div>
 
-        {/* WhatsApp LID (Read-only) */}
-        <div className="space-y-1.5">
-          <label className="text-xs font-medium text-zinc-400">
-            LID do WhatsApp (Identificador Criptográfico Seguro)
-          </label>
-          <div className="relative">
-            <input
-              type="text"
-              readOnly
-              value={formData.ownerLid || 'Sincronizado automaticamente ao conectar'}
-              className="w-full pl-9 pr-3.5 py-2 rounded-xl bg-[#0B0E12] border border-[#22282F] text-xs text-zinc-400 font-mono select-all cursor-default"
-            />
-            <Fingerprint className="w-4 h-4 text-zinc-500 absolute left-3 top-2.5" />
+        {/* Privilégios Informativo */}
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d] md:col-span-2 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shrink-0">
+              <Fingerprint className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-xs font-semibold text-white">Privilégios de Superusuário do Proprietário</p>
+              <p className="text-[11px] text-slate-400 leading-snug">
+                O número cadastrado pode emitir comandos especiais diretamente no chat privado com o bot (ex: reiniciar, pausar, status).
+              </p>
+            </div>
           </div>
-        </div>
-
-        {/* Status de Permissões */}
-        <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F] flex flex-col justify-center">
-          <div className="flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
-            <span className="text-xs font-semibold text-zinc-200">Permissões de Gestão:</span>
-            <span className="text-xs text-emerald-400 font-medium">Proprietário Pleno</span>
-          </div>
-          <p className="text-[11px] text-zinc-500 mt-1">
-            Comandos via WhatsApp liberados com proteção anti-spoofing por LID e Phone.
-          </p>
+          <span className="text-[10px] text-sky-400 font-semibold bg-sky-500/10 border border-sky-400/20 px-2.5 py-1 rounded-full shrink-0 font-mono">
+            {formData.firstAccessCompleted ? 'Acesso Ativo' : 'Primeiro Acesso Pendente'}
+          </span>
         </div>
       </div>
     </div>

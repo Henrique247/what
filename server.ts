@@ -56,6 +56,14 @@ import {
     isAllowedDestination,
     registerActiveSock
 } from './src/services/whatsappPipeline';
+import {
+    restoreAuthStateFromFirestore,
+    persistCredsToFirestore,
+    persistKeyBatchToFirestore,
+    syncAllAuthFilesToFirestore,
+    clearAuthStateEverywhere,
+    hasPersistedSessionInFirestore
+} from './src/services/whatsappAuthPersistence';
 
 const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
 
@@ -269,6 +277,32 @@ const startingBots = new Set<string>();
 const botReconnectAttempts = new Map<string, number>();
 const reconnectTimers = new Map<string, NodeJS.Timeout>();
 
+// Real Runtime Telemetry & Performance Tracking
+const runtimeMetrics = {
+    recentLatencies: [] as number[],
+    recentAiTokens: [] as { timestamp: number; tokens: number }[],
+    totalTasksExecuted: 0,
+    successfulTasks: 0,
+    failedTasks: 0
+};
+
+function recordRuntimeLatency(ms: number) {
+    if (ms > 0 && ms < 60000) {
+        runtimeMetrics.recentLatencies.push(ms);
+        if (runtimeMetrics.recentLatencies.length > 100) {
+            runtimeMetrics.recentLatencies.shift();
+        }
+    }
+}
+
+function recordRuntimeTokens(tokens: number) {
+    if (tokens > 0) {
+        runtimeMetrics.recentAiTokens.push({ timestamp: Date.now(), tokens });
+        const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+        runtimeMetrics.recentAiTokens = runtimeMetrics.recentAiTokens.filter(t => t.timestamp >= fiveMinAgo);
+    }
+}
+
 // Safe Message Sending Wrapper with Connection Verification and Audit Logging
 async function safeSendMessage(
     botId: string, 
@@ -277,7 +311,9 @@ async function safeSendMessage(
     options?: any,
     context?: any
 ): Promise<boolean> {
-    return sendBotMessage(
+    runtimeMetrics.totalTasksExecuted++;
+    const startTime = Date.now();
+    const ok = await sendBotMessage(
         {
             botId,
             destinationJid: jid,
@@ -289,6 +325,14 @@ async function safeSendMessage(
         (id) => activeSocks.get(id),
         (id) => connectionStatuses.get(id)
     );
+    const duration = Date.now() - startTime;
+    recordRuntimeLatency(duration);
+    if (ok) {
+        runtimeMetrics.successfulTasks++;
+    } else {
+        runtimeMetrics.failedTasks++;
+    }
+    return ok;
 }
 
 // Global Process Crash Prevention & Audit
@@ -319,7 +363,7 @@ process.on('unhandledRejection', (reason: any) => {
 });
 
 async function resetBotSession(botId: string) {
-    console.log(`[Bot ${botId}] Resetando sessão WhatsApp e gerando novo QR...`);
+    console.log(`[Bot ${botId}] Resetando sessão WhatsApp e limpando armazenamento em nuvem...`);
     botReconnectAttempts.delete(botId);
     if (reconnectTimers.has(botId)) {
         clearTimeout(reconnectTimers.get(botId));
@@ -335,13 +379,7 @@ async function resetBotSession(botId: string) {
         registerActiveSock(botId, null);
     }
     const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
-    if (fs.existsSync(authPath)) {
-        try {
-            fs.rmSync(authPath, { recursive: true, force: true });
-        } catch(e) {
-            console.error(`[Bot ${botId}] Erro ao limpar auth_info:`, e);
-        }
-    }
+    await clearAuthStateEverywhere(firestoreDb, botId, authPath);
     startingBots.delete(botId);
     qrCodes.delete(botId);
     connectionStatuses.set(botId, "Reiniciando...");
@@ -357,8 +395,15 @@ async function startBot(botId: string) {
     // Re-verify if bot still exists and is active in DB before starting
     try {
         const checkDoc = await getDoc(doc(firestoreDb, 'bots', botId));
-        if (!checkDoc.exists() || !checkDoc.data()?.active) {
-            console.log(`[Bot ${botId}] [BOT_DELETED_OR_INACTIVE] Bot não encontrado ou inativo no Firestore. Abortando startBot.`);
+        if (!checkDoc.exists()) {
+            console.log(`[Bot ${botId}] [BOT_NOT_FOUND] Bot não encontrado no Firestore. Abortando startBot.`);
+            startingBots.delete(botId);
+            return;
+        }
+        const data = checkDoc.data();
+        const isActive = data?.active === 1 || data?.active === true || (data?.active !== 0 && data?.active !== false);
+        if (!isActive) {
+            console.log(`[Bot ${botId}] [BOT_INACTIVE] Bot desativado no Firestore. Abortando startBot.`);
             startingBots.delete(botId);
             return;
         }
@@ -374,7 +419,8 @@ async function startBot(botId: string) {
     try {
         const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
         const bot = botDoc.data();
-        if (!bot || !bot.active) {
+        const isActive = bot?.active === 1 || bot?.active === true || (bot?.active !== 0 && bot?.active !== false);
+        if (!bot || !isActive) {
             console.log(`[Bot ${botId}] Bot inativo ou não encontrado.`);
             startingBots.delete(botId);
             return;
@@ -393,8 +439,45 @@ async function startBot(botId: string) {
         const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
         if (!fs.existsSync(authPath)) fs.mkdirSync(authPath, { recursive: true });
 
+        // RESTAURAÇÃO RESILIENTE: Se o contêiner reiniciou ou sofreu deploy, restaura as chaves do Firestore
+        console.log(`[Bot ${botId}] [PERSISTÊNCIA] Verificando credenciais salvas no Firestore para preservação pós-deploy...`);
+        const { restored, hasCreds, fileCount } = await restoreAuthStateFromFirestore(firestoreDb, botId, authPath);
+        if (restored && hasCreds) {
+            console.log(`[Bot ${botId}] [SESSÃO_PRESERVADA] ✅ ${fileCount} arquivos de sessão recuperados com sucesso! Reconectando socket sem requerer QR Code...`);
+            connectionStatuses.set(botId, "Restaurando sessão...");
+        } else {
+            console.log(`[Bot ${botId}] [PRIMEIRO_EMPARELHAMENTO] Nenhuma sessão prévia encontrada no Firestore. Gerando QR Code / Código de emparelhamento...`);
+            connectionStatuses.set(botId, "Conectando...");
+        }
+
         console.log(`[Bot ${botId}] Carregando estado de autenticação...`);
         const { state, saveCreds } = await useMultiFileAuthState(authPath);
+
+        // Wrapper de saveCreds para sincronizar creds.json no Firestore imediatamente
+        const wrappedSaveCreds = async () => {
+            try {
+                await saveCreds();
+                await persistCredsToFirestore(firestoreDb, botId, authPath);
+            } catch (err) {
+                console.error(`[Bot ${botId}] Erro ao salvar creds no Firestore:`, err);
+            }
+        };
+
+        // Wrapper de state.keys.set para sincronizar cada chave no Firestore imediatamente
+        const originalKeysSet = state.keys.set;
+        state.keys.set = async (data: any) => {
+            try {
+                await originalKeysSet(data);
+                await persistKeyBatchToFirestore(
+                    firestoreDb, 
+                    botId, 
+                    data, 
+                    (baileysLib as any).BufferJSON?.replacer
+                );
+            } catch (err) {
+                console.error(`[Bot ${botId}] Erro ao sincronizar chaves de sessão no Firestore:`, err);
+            }
+        };
         
         console.log(`[Bot ${botId}] Buscando versão do Baileys...`);
         const { version } = await fetchLatestBaileysVersion();
@@ -416,9 +499,9 @@ async function startBot(botId: string) {
 
         activeSocks.set(botId, sock);
         registerActiveSock(botId, sock);
-        connectionStatuses.set(botId, "Conectando...");
+        connectionStatuses.set(botId, (restored && hasCreds) ? "Reconectando..." : "Conectando...");
 
-        sock.ev.on('creds.update', saveCreds);
+        sock.ev.on('creds.update', wrappedSaveCreds);
 
         sock.ev.on('connection.update', async (update: any) => {
             const { connection, lastDisconnect, qr } = update;
@@ -452,18 +535,16 @@ async function startBot(botId: string) {
                 // Re-check if bot is still active in DB before reconnecting
                 const botDoc = await getDoc(doc(firestoreDb, 'bots', botId));
                 const currentBot = botDoc.data();
-                if (!currentBot || !currentBot.active) {
+                const isCurrentActive = currentBot?.active === 1 || currentBot?.active === true || (currentBot?.active !== 0 && currentBot?.active !== false);
+                if (!currentBot || !isCurrentActive) {
                     console.log(`[Bot ${botId}] Bot desativado ou apagado no banco, não irá reconectar.`);
                     startingBots.delete(botId);
                     return;
                 }
 
                 if (isLoggedOut) {
-                    console.log(`[Bot ${botId}] [LOGGED_OUT] Sessão invalidada/deslogada pelo usuário ou WhatsApp. Limpando credenciais...`);
-                    const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
-                    if (fs.existsSync(authPath)) {
-                        try { fs.rmSync(authPath, { recursive: true, force: true }); } catch {}
-                    }
+                    console.log(`[Bot ${botId}] [LOGGED_OUT] Sessão invalidada/deslogada pelo WhatsApp. Limpando credenciais locais e na nuvem...`);
+                    await clearAuthStateEverywhere(firestoreDb, botId, authPath);
                     connectionStatuses.set(botId, "Deslogado");
                     startingBots.delete(botId);
                     botReconnectAttempts.delete(botId);
@@ -475,11 +556,13 @@ async function startBot(botId: string) {
                     startingBots.delete(botId);
                     botReconnectAttempts.delete(botId);
                 } else {
-                    // Reconnection allowed only for previously authenticated bots or network drops after open
+                    // Reconnection allowed - preserva 100% das credenciais na nuvem e no disco!
                     connectionStatuses.set(botId, "Reconectando...");
                     const attempts = (botReconnectAttempts.get(botId) || 0) + 1;
                     botReconnectAttempts.set(botId, attempts);
-                    const delay = Math.min(60000, 5000 * Math.pow(1.5, attempts - 1));
+                    const delay = statusCode === DisconnectReason.restartRequired 
+                        ? 1000 
+                        : Math.min(60000, 3000 * Math.pow(1.4, attempts - 1));
 
                     console.log(`[Bot ${botId}] [RECONNECT_SCHEDULED] Tentativa #${attempts} de reconexão em ${Math.round(delay/1000)}s...`);
                     
@@ -494,7 +577,9 @@ async function startBot(botId: string) {
                         // Double check active status before starting
                         try {
                             const checkDoc = await getDoc(doc(firestoreDb, 'bots', botId));
-                            if (!checkDoc.exists() || !checkDoc.data()?.active) {
+                            const checkData = checkDoc.data();
+                            const stillActive = checkData?.active === 1 || checkData?.active === true || (checkData?.active !== 0 && checkData?.active !== false);
+                            if (!checkDoc.exists() || !stillActive) {
                                 console.log(`[Bot ${botId}] [RECONNECT_CANCELLED] Bot foi apagado ou desativado durante espera.`);
                                 return;
                             }
@@ -502,7 +587,7 @@ async function startBot(botId: string) {
                             return;
                         }
 
-                        console.log(`[Bot ${botId}] [RECONNECT_STARTED] Iniciando reconexão agendada...`);
+                        console.log(`[Bot ${botId}] [RECONNECT_STARTED] Iniciando reconexão agendada com persistência intacta...`);
                         startBot(botId);
                     }, delay);
 
@@ -518,6 +603,11 @@ async function startBot(botId: string) {
                     clearTimeout(reconnectTimers.get(botId));
                     reconnectTimers.delete(botId);
                 }
+
+                // Sincroniza todos os arquivos de autenticação no Firestore para blindagem total contra novos deploys
+                syncAllAuthFilesToFirestore(firestoreDb, botId, authPath).catch(err =>
+                    console.error(`[Bot ${botId}] Erro ao sincronizar arquivos de auth no Firestore:`, err)
+                );
 
                 // Sincroniza identificação real do número/LID conectado e atualiza bot
                 const connectedJid = sock.user?.id || '';
@@ -2311,6 +2401,80 @@ app.post('/api/bot/:id/reconnect', requireBotAuth, async (req, res) => {
     }
 });
 
+// Real WhatsApp Pairing Code Generation via Baileys API
+app.post('/api/bot/:id/pairing-code', requireBotAuth, async (req, res) => {
+    try {
+        const botId = req.params.id;
+        const currentBot = (req as any).bot;
+        const authRole = (req as any).authRole;
+
+        if (authRole !== 'ADMIN' && !hasPermission(currentBot, PERMISSIONS.WHATSAPP_MANAGE)) {
+            return res.status(403).json({ error: 'Permissão insuficiente para configurar emparelhamento do WhatsApp.' });
+        }
+
+        const { phoneNumber } = req.body;
+        if (!phoneNumber || typeof phoneNumber !== 'string') {
+            return res.status(400).json({ error: 'Número de telefone é obrigatório.' });
+        }
+
+        const cleanPhone = phoneNumber.replace(/\D/g, '');
+        if (cleanPhone.length < 9) {
+            return res.status(400).json({ error: 'Número inválido. Inclua o código do país (DDI) e DDD (ex: 5511999998888 ou 244923000000).' });
+        }
+
+        let sock = activeSocks.get(botId);
+        if (!sock) {
+            console.log(`[Bot ${botId}] Socket não ativo para pairing code. Inicializando instância...`);
+            await startBot(botId);
+            for (let i = 0; i < 15; i++) {
+                await new Promise(r => setTimeout(r, 400));
+                sock = activeSocks.get(botId);
+                if (sock) break;
+            }
+        }
+
+        if (!sock) {
+            return res.status(503).json({ error: 'Socket WhatsApp em inicialização. Tente novamente em alguns segundos.' });
+        }
+
+        if (sock.authState?.creds?.registered) {
+            return res.status(400).json({ error: 'Esta instância já está registrada e conectada ao WhatsApp.' });
+        }
+
+        if (typeof sock.requestPairingCode !== 'function') {
+            return res.status(500).json({ error: 'Versão do Baileys não suporta Pairing Code nesta conexão.' });
+        }
+
+        console.log(`[Bot ${botId}] Solicitando Pairing Code oficial ao WhatsApp para ${cleanPhone}...`);
+        const rawCode = await sock.requestPairingCode(cleanPhone);
+        const formattedCode = (rawCode && rawCode.length === 8) 
+            ? `${rawCode.slice(0, 4)}-${rawCode.slice(4)}` 
+            : (rawCode || '');
+
+        await recordAuditLog(firestoreDb, {
+            botId,
+            role: authRole,
+            actorRole: authRole,
+            action: 'WHATSAPP_PAIRING_CODE_GENERATED',
+            result: 'SUCCESS',
+            details: `Pairing code oficial do WhatsApp solicitado para ${cleanPhone.slice(0, 4)}****${cleanPhone.slice(-2)}`
+        });
+
+        res.json({ success: true, code: formattedCode });
+    } catch (e: any) {
+        console.error("Erro ao gerar pairing code:", e);
+        await recordAuditLog(firestoreDb, {
+            botId: req.params.id,
+            role: (req as any).authRole || 'CLIENT',
+            actorRole: (req as any).authRole || 'CLIENT',
+            action: 'WHATSAPP_PAIRING_CODE_GENERATED',
+            result: 'ERROR',
+            details: `Falha ao solicitar pairing code: ${e.message}`
+        });
+        res.status(500).json({ error: e.message || 'Falha ao gerar código de emparelhamento no WhatsApp.' });
+    }
+});
+
 // Reset Configuration endpoint
 app.post('/api/bot/:id/reset-config', requireBotAuth, async (req, res) => {
     try {
@@ -2386,9 +2550,7 @@ app.delete('/api/bot/:id', requireBotAuth, async (req, res) => {
         }
 
         const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
-        if (fs.existsSync(authPath)) {
-            try { fs.rmSync(authPath, { recursive: true, force: true }); } catch {}
-        }
+        await clearAuthStateEverywhere(firestoreDb, botId, authPath);
 
         await deleteDoc(doc(firestoreDb, 'bots', botId));
 
@@ -3030,15 +3192,9 @@ app.delete('/api/admin/bots/:id', async (req, res) => {
         qrCodes.delete(botId);
         connectionStatuses.delete(botId);
 
-        // Delete auth folder
+        // Delete auth everywhere (disk + cloud)
         const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
-        if (fs.existsSync(authPath)) {
-            try {
-                fs.rmSync(authPath, { recursive: true, force: true });
-            } catch (e) {
-                console.error(`[Admin] Erro ao deletar pasta de auth do bot ${botId}:`, e);
-            }
-        }
+        await clearAuthStateEverywhere(firestoreDb, botId, authPath);
 
         // Delete from DB
         const botRef = doc(firestoreDb, 'bots', botId);
@@ -3056,20 +3212,26 @@ app.delete('/api/admin/bots/:id', async (req, res) => {
     }
 });
 
-// Initialize existing active bots
+// Initialize existing active bots with Cloud Persistence for continuous WhatsApp connectivity across redeploys
 async function initBots() {
     try {
+        console.log("[Boot] Inicializando e recuperando instâncias WhatsApp do Firestore...");
         const q = query(collection(firestoreDb, 'bots'));
         const snapshot = await getDocs(q);
         for (const docItem of snapshot.docs) {
             const data = docItem.data();
+            const botId = docItem.id;
             if (!data.accessToken) {
                 const token = generateSecureToken();
                 await updateDoc(docItem.ref, { accessToken: token });
-                console.log(`[Segurança] Token gerado para bot ${data.name} (${docItem.id})`);
+                console.log(`[Segurança] Token gerado para bot ${data.name} (${botId})`);
             }
-            if (data.active) {
-                startBot(docItem.id);
+            const isActive = data.active === 1 || data.active === true || (data.active !== 0 && data.active !== false);
+            if (isActive) {
+                console.log(`[Boot] Restaurando e iniciando bot ativo: "${data.name || botId}" (${botId})...`);
+                startBot(botId);
+                // Stagger starts to ensure smooth socket connections and prevent contention during container startup
+                await new Promise(r => setTimeout(r, 600));
             }
         }
     } catch (e) {
@@ -3092,6 +3254,18 @@ app.get('/api/admin/stats', async (req, res) => {
         const uniqueContacts = new Set();
         const botStatsList = [];
 
+        // Real 7-Day calendar array for genuine message breakdown
+        const daysOfWeekNames = ['DOM', 'SEG', 'TER', 'QUA', 'QUI', 'SEX', 'SÁB'];
+        const today = new Date();
+        const last7Days: { dateStr: string; day: string; count: number }[] = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(today.getDate() - i);
+            const dayName = daysOfWeekNames[d.getDay()];
+            const dateStr = d.toISOString().slice(0, 10);
+            last7Days.push({ dateStr, day: dayName, count: 0 });
+        }
+
         for (const bot of bots) {
             const status = connectionStatuses.get(bot.id) || "Desconectado";
             const botRef = doc(firestoreDb, 'bots', bot.id);
@@ -3101,10 +3275,29 @@ app.get('/api/admin/stats', async (req, res) => {
             
             const botContacts = new Set();
             historySnap.docs.forEach(d => {
-                const jid = d.data().jid;
+                const itemData = d.data();
+                const jid = itemData.jid;
                 if (jid) {
                     uniqueContacts.add(jid);
                     botContacts.add(jid);
+                }
+
+                // Aggregate actual message timestamps into the 7-day chart
+                const rawTs = itemData.timestamp || itemData.createdAt;
+                let parsedDate: Date | null = null;
+                if (rawTs) {
+                    if (typeof rawTs.toDate === 'function') {
+                        parsedDate = rawTs.toDate();
+                    } else if (typeof rawTs === 'string' || typeof rawTs === 'number') {
+                        parsedDate = new Date(rawTs);
+                    }
+                }
+                if (parsedDate && !isNaN(parsedDate.getTime())) {
+                    const dStr = parsedDate.toISOString().slice(0, 10);
+                    const bucket = last7Days.find(b => b.dateStr === dStr);
+                    if (bucket) {
+                        bucket.count++;
+                    }
                 }
             });
 
@@ -3141,17 +3334,48 @@ app.get('/api/admin/stats', async (req, res) => {
         const successAiLogs = recentLogs.filter(l => l.action?.includes('AI_') && l.result === 'SUCCESS').length;
         const aiSuccessRate = totalAiLogs > 0 ? `${Math.round((successAiLogs / totalAiLogs) * 100)}%` : '100%';
 
+        // Real Telemetry Computations (No fabricated values)
+        const maxDailyCount = Math.max(...last7Days.map(d => d.count), 0);
+        const weeklyData = last7Days.map(d => ({
+            day: d.day,
+            value: maxDailyCount > 0 ? Math.round((d.count / maxDailyCount) * 100) : 0,
+            count: d.count >= 1000 ? `${(d.count / 1000).toFixed(1)}k` : String(d.count),
+            isPeak: maxDailyCount > 0 && d.count === maxDailyCount
+        }));
+
+        const avgLatencyMs = runtimeMetrics.recentLatencies.length > 0
+            ? Math.round(runtimeMetrics.recentLatencies.reduce((a, b) => a + b, 0) / runtimeMetrics.recentLatencies.length)
+            : 0;
+
+        const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+        const recentTokensSum = runtimeMetrics.recentAiTokens
+            .filter(t => t.timestamp >= fiveMinAgo)
+            .reduce((sum, t) => sum + t.tokens, 0);
+        const tokensPerMin = recentTokensSum > 0 ? `${(recentTokensSum / 5).toFixed(0)}` : '0';
+
+        const totalExecutedTasks = totalMessages + runtimeMetrics.totalTasksExecuted;
+        const totalOps = runtimeMetrics.successfulTasks + runtimeMetrics.failedTasks;
+        const deliveryRate = totalOps > 0
+            ? Number(((runtimeMetrics.successfulTasks / totalOps) * 100).toFixed(1))
+            : (totalMessages > 0 ? 100 : 100);
+
         res.json({
             totalBots: bots.length,
             onlineBots: onlineCount,
             offlineBots: bots.length - onlineCount,
             totalMessages,
+            totalMessagesProcessed: totalMessages,
             totalUsers: uniqueContacts.size,
+            totalTasksCount: totalExecutedTasks,
             botStats: botStatsList,
             recentActivity: recentLogs.slice(0, 10),
             systemMetrics,
             errorLogsCount,
-            aiSuccessRate
+            aiSuccessRate,
+            avgLatencyMs,
+            deliveryRate,
+            tokensPerMin,
+            weeklyData
         });
     } catch (e) {
         console.error("Erro ao carregar estatísticas do admin:", e);
@@ -3288,14 +3512,32 @@ async function setupFrontendAndListen() {
 setupFrontendAndListen();
 
 // Encerramento limpo e liberação de recursos
-const cleanup = () => {
-    console.log('[Server] Recebido sinal de término. Liberando portas e conexões...');
+// Encerramento limpo e preservação de sessões em deploys/atualizações
+let isCleaningUp = false;
+const cleanup = async () => {
+    if (isCleaningUp) return;
+    isCleaningUp = true;
+    console.log('[Deploy/Update Lifecycle] Sinal de término detectado. Salvando sessões ativas no Firestore...');
+    
+    // Sincroniza todas as credenciais e chaves ativas no Firestore antes de fechar os sockets
+    const syncTasks: Promise<any>[] = [];
     for (const [botId, sock] of activeSocks.entries()) {
-        try {
-            sock.ev?.removeAllListeners('connection.update');
-            sock.end?.(undefined);
-        } catch {}
+        const authPath = path.join(process.cwd(), 'auth_info', `bot_${botId}`);
+        syncTasks.push(
+            syncAllAuthFilesToFirestore(firestoreDb, botId, authPath)
+                .catch(err => console.error(`[Deploy/Update Lifecycle] Erro ao sincronizar bot ${botId}:`, err))
+                .finally(() => {
+                    try {
+                        sock.ev?.removeAllListeners('connection.update');
+                        sock.end?.(undefined); // Encerra o socket sem invalidar o WhatsApp
+                    } catch {}
+                })
+        );
     }
+    
+    await Promise.allSettled(syncTasks);
+    console.log('[Deploy/Update Lifecycle] ✅ Todas as sessões foram preservadas na nuvem para o novo container.');
+
     activeSocks.clear();
     if (server) {
         server.close(() => {
@@ -3307,7 +3549,7 @@ const cleanup = () => {
     }
     setTimeout(() => {
         process.exit(0);
-    }, 3000);
+    }, 4000);
 };
 
 process.on('SIGTERM', cleanup);

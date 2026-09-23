@@ -68,9 +68,9 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
       return;
     }
 
-    setGenerating(true);
     try {
-      const blob = await api.generatePdf(
+      setGenerating(true);
+      const blob = await api.generatePdfDocument(
         botId,
         {
           title,
@@ -90,7 +90,7 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.pdf`;
+      a.download = `${title.toLowerCase().replace(/[^a-z0-9]/g, '_')}_${Date.now()}.pdf`;
       document.body.appendChild(a);
       a.click();
       window.URL.revokeObjectURL(url);
@@ -98,20 +98,19 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
 
       toast.success('Documento PDF gerado e baixado com sucesso!');
     } catch (e: any) {
-      toast.error(e.message || 'Erro ao gerar PDF');
+      toast.error(e.message || 'Falha ao gerar arquivo PDF.');
     } finally {
       setGenerating(false);
     }
   };
 
   const handleSendViaWhatsApp = async () => {
-    if (!targetJid.trim()) {
-      toast.error('Selecione ou digite o destinatário (grupo ou número) para envio.');
-      return;
-    }
-
     if (!title.trim() || !content.trim()) {
       toast.error('Informe o título e o conteúdo do documento.');
+      return;
+    }
+    if (!targetJid.trim()) {
+      toast.error('Selecione ou informe o JID do destinatário (contato ou grupo).');
       return;
     }
 
@@ -149,16 +148,16 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
 
   return (
     <div className="space-y-6">
-      <div className="techstar-card p-6 space-y-6">
+      <div className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-6 space-y-6 shadow-lg">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#22282F]">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#142340]">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+            <div className="w-10 h-10 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
               <FileText className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-semibold text-zinc-100">Gerador & Emissor de Documentos PDF</h3>
-              <p className="text-xs text-zinc-400">
+              <h3 className="text-sm font-semibold text-white">Gerador & Emissor de Documentos PDF</h3>
+              <p className="text-xs text-slate-400">
                 Gere arquivos PDF profissionais e envie diretamente aos grupos ou contatos do WhatsApp com confirmação real.
               </p>
             </div>
@@ -182,7 +181,7 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
           {/* Main Content (2 Cols) */}
           <div className="lg:col-span-2 space-y-4">
             <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                 Título do Documento *
               </label>
               <input
@@ -190,12 +189,12 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Ex: Regulamento Interno / Relatório de Vendas"
-                className="techstar-input w-full"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
               />
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+              <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                 Conteúdo / Texto do Documento *
               </label>
               <textarea
@@ -203,16 +202,16 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
                 onChange={(e) => setContent(e.target.value)}
                 rows={10}
                 placeholder="Digite ou cole aqui o conteúdo detalhado do documento..."
-                className="techstar-input w-full font-mono text-xs leading-relaxed"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono leading-relaxed resize-y"
               />
-              <p className="text-[11px] text-zinc-500 mt-1">
-                O PDFKit ajustará automaticamente as quebras de linha e criará novas páginas quando necessário.
+              <p className="text-[11px] text-slate-500 mt-1">
+                O motor PDFKit ajustará automaticamente as quebras de linha e criará novas páginas quando necessário.
               </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                   Texto do Cabeçalho (Opcional)
                 </label>
                 <input
@@ -220,12 +219,12 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
                   value={headerText}
                   onChange={(e) => setHeaderText(e.target.value)}
                   placeholder="Ex: TECHSTAR • DOCUMENTO OFICIAL"
-                  className="techstar-input w-full text-xs"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-zinc-300 mb-1.5">
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
                   Texto do Rodapé (Opcional)
                 </label>
                 <input
@@ -233,7 +232,7 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
                   value={footerText}
                   onChange={(e) => setFooterText(e.target.value)}
                   placeholder="Ex: Confidencial • Emitido via Bot"
-                  className="techstar-input w-full text-xs"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
                 />
               </div>
             </div>
@@ -241,18 +240,18 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
 
           {/* Formatting & Sending Options (1 Col) */}
           <div className="space-y-4">
-            <div className="p-4 rounded-xl bg-[#101418] border border-[#22282F] space-y-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-zinc-200">
-                <Settings2 className="w-4 h-4 text-emerald-400" />
+            <div className="p-4 rounded-xl bg-[#081021] border border-[#162a4d] space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                <Settings2 className="w-4 h-4 text-sky-400" />
                 <span>Layout & Tipografia</span>
               </div>
 
               <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">Tamanho da Página</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Tamanho da Página</label>
                 <select
                   value={pageSize}
                   onChange={(e) => setPageSize(e.target.value as any)}
-                  className="techstar-input w-full text-xs"
+                  className="w-full px-3 py-2 rounded-xl bg-[#091326] border border-[#1b3259] text-xs text-white focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
                 >
                   <option value="A4">A4 (210 x 297 mm)</option>
                   <option value="A5">A5 (148 x 210 mm)</option>
@@ -261,11 +260,11 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">Orientação</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Orientação</label>
                 <select
                   value={orientation}
                   onChange={(e) => setOrientation(e.target.value as any)}
-                  className="techstar-input w-full text-xs"
+                  className="w-full px-3 py-2 rounded-xl bg-[#091326] border border-[#1b3259] text-xs text-white focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
                 >
                   <option value="portrait">Vertical (Retrato / Portrait)</option>
                   <option value="landscape">Horizontal (Paisagem / Landscape)</option>
@@ -273,11 +272,11 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">Família Tipográfica</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Família Tipográfica</label>
                 <select
                   value={font}
                   onChange={(e) => setFont(e.target.value as any)}
-                  className="techstar-input w-full text-xs"
+                  className="w-full px-3 py-2 rounded-xl bg-[#091326] border border-[#1b3259] text-xs text-white focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
                 >
                   <option value="Helvetica">Helvetica (Moderna / Sans-serif)</option>
                   <option value="Times-Roman">Times New Roman (Clássica / Serif)</option>
@@ -286,7 +285,7 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">Tamanho da Fonte ({fontSize}pt)</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Tamanho da Fonte ({fontSize}pt)</label>
                 <input
                   type="range"
                   min={9}
@@ -294,35 +293,35 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
                   step={1}
                   value={fontSize}
                   onChange={(e) => setFontSize(Number(e.target.value))}
-                  className="w-full accent-emerald-500"
+                  className="w-full accent-sky-400"
                 />
               </div>
 
-              <div className="flex items-center justify-between pt-2 border-t border-[#22282F]">
-                <span className="text-[11px] text-zinc-300 font-medium">Numeração de Páginas</span>
+              <div className="flex items-center justify-between pt-2 border-t border-[#142340]">
+                <span className="text-[11px] text-slate-300 font-medium">Numeração de Páginas</span>
                 <input
                   type="checkbox"
                   checked={paginationEnabled}
                   onChange={(e) => setPaginationEnabled(e.target.checked)}
-                  className="rounded accent-emerald-500"
+                  className="rounded accent-sky-400"
                 />
               </div>
             </div>
 
             {/* WhatsApp Dispatch Section */}
-            <div className="p-4 rounded-xl bg-[#101418] border border-emerald-500/20 space-y-3">
-              <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
+            <div className="p-4 rounded-xl bg-[#081021] border border-sky-500/20 space-y-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-sky-400">
                 <Send className="w-4 h-4" />
                 <span>Envio Direto pelo WhatsApp</span>
               </div>
 
               <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">Destinatário</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Destinatário</label>
                 {groups.length > 0 ? (
                   <select
                     value={targetJid}
                     onChange={(e) => setTargetJid(e.target.value)}
-                    className="techstar-input w-full text-xs mb-2"
+                    className="w-full px-3 py-2 rounded-xl bg-[#091326] border border-[#1b3259] text-xs text-white focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono mb-2"
                   >
                     <optgroup label="Grupos Conectados">
                       {groups.map((g) => (
@@ -339,18 +338,18 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
                   value={targetJid}
                   onChange={(e) => setTargetJid(e.target.value)}
                   placeholder="Ou digite o JID / Telefone (ex: 244942272074@s.whatsapp.net)"
-                  className="techstar-input w-full text-xs font-mono"
+                  className="w-full px-3 py-2 rounded-xl bg-[#091326] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
                 />
               </div>
 
               <div>
-                <label className="block text-[11px] text-zinc-400 mb-1">Legenda (Opcional)</label>
+                <label className="block text-[11px] text-slate-400 mb-1">Legenda (Opcional)</label>
                 <input
                   type="text"
                   value={caption}
                   onChange={(e) => setCaption(e.target.value)}
                   placeholder="Ex: Segue em anexo o documento solicitado."
-                  className="techstar-input w-full text-xs"
+                  className="w-full px-3 py-2 rounded-xl bg-[#091326] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
                 />
               </div>
 
@@ -366,13 +365,13 @@ export const DocumentPdfCard: React.FC<DocumentPdfCardProps> = ({
               </Button>
 
               {lastSentResult && (
-                <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-start gap-2">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="p-3 rounded-xl bg-sky-500/10 border border-sky-400/30 text-sky-400 text-xs flex items-start gap-2 shadow-[0_0_10px_rgba(14,165,233,0.15)]">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-sky-400" />
                   <div className="space-y-0.5">
-                    <p className="font-semibold">Documento Despachado!</p>
-                    <p className="text-[10px] text-emerald-300 font-mono">ID da Mensagem: {lastSentResult.messageId}</p>
+                    <p className="font-semibold text-white">Documento Despachado!</p>
+                    <p className="text-[10px] text-sky-300 font-mono">ID da Mensagem: {lastSentResult.messageId}</p>
                     {lastSentResult.durationMs && (
-                      <p className="text-[10px] text-zinc-400">Tempo de envio: {lastSentResult.durationMs}ms</p>
+                      <p className="text-[10px] text-slate-400">Tempo de envio: {lastSentResult.durationMs}ms</p>
                     )}
                   </div>
                 </div>

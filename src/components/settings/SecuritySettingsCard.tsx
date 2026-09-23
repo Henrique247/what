@@ -58,6 +58,7 @@ export const SecuritySettingsCard: React.FC<SecuritySettingsCardProps> = ({
       
       if (res.accessToken) {
         localStorage.setItem(`bot_token_${bot.id}`, res.accessToken);
+        sessionStorage.setItem(`bot_auth_${bot.id}`, res.accessToken);
         if (onTokenUpdated) onTokenUpdated(res.accessToken);
       }
 
@@ -72,144 +73,106 @@ export const SecuritySettingsCard: React.FC<SecuritySettingsCardProps> = ({
   };
 
   return (
-    <>
-      <div id="settings-security" className="techstar-card p-5 sm:p-6 space-y-5">
-        <div className="flex items-center justify-between pb-3 border-b border-[#22282F]">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-              <KeyRound className="w-4 h-4" />
-            </div>
-            <div>
-              <h2 className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">
-                Segurança do Proprietário
-              </h2>
-              <p className="text-xs text-zinc-400">Autenticação por PIN criptografado e controle de sessões</p>
-            </div>
+    <div id="settings-security" className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 sm:p-6 space-y-5 shadow-lg">
+      <div className="flex items-center justify-between pb-3 border-b border-[#142340]">
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
+            <KeyRound className="w-4 h-4" />
           </div>
-
-          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>PIN Configurado</span>
+          <div>
+            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">Segurança & PIN de Acesso</h2>
+            <p className="text-xs text-slate-400">Proteja as configurações do bot com uma senha forte de 6 dígitos</p>
           </div>
         </div>
 
-        {/* Informative notice */}
-        <div className="p-3.5 rounded-xl bg-[#0B0E12] border border-[#22282F] flex items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-[#151A1F] border border-[#22282F] flex items-center justify-center text-zinc-400 shrink-0">
-              <Lock className="w-4 h-4" />
-            </div>
-            <div>
-              <p className="text-xs font-semibold text-zinc-200">Credencial Protegida por Hash Criptográfico</p>
-              <p className="text-[11px] text-zinc-500">
-                Por segurança, o PIN atual nunca é exibido ou retornado ao navegador.
-              </p>
-            </div>
-          </div>
-          <span className="text-[10px] text-emerald-400 font-mono bg-emerald-500/10 border border-emerald-500/20 px-2 py-0.5 rounded-full shrink-0">
-            Hash scrypt/salt
-          </span>
+        <div className="flex items-center gap-1.5 text-xs text-sky-400 font-mono">
+          <ShieldCheck className="w-4 h-4" />
+          <span>Hash Bcrypt Ativo</span>
         </div>
-
-        {/* Change PIN Form */}
-        <form onSubmit={handleOpenConfirm} className="space-y-4 pt-1">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Novo PIN */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-zinc-300 flex items-center justify-between">
-                <span>Novo PIN de Acesso</span>
-                <span className="text-[10px] text-zinc-500 font-normal">Mínimo 6 dígitos</span>
-              </label>
-              <div className="relative">
-                <input
-                  type={showPin ? 'text' : 'password'}
-                  maxLength={12}
-                  value={newPin}
-                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, ''))}
-                  placeholder="Ex: 948216"
-                  className="w-full pl-3.5 pr-10 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors font-mono tracking-widest"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPin(!showPin)}
-                  className="p-1.5 text-zinc-500 hover:text-zinc-300 absolute right-2.5 top-2 transition-colors"
-                  title={showPin ? 'Ocultar PIN' : 'Mostrar PIN'}
-                >
-                  {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-
-            {/* Confirmar Novo PIN */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-zinc-300">Confirmar Novo PIN</label>
-              <div className="relative">
-                <input
-                  type={showPin ? 'text' : 'password'}
-                  maxLength={12}
-                  value={confirmPin}
-                  onChange={(e) => setConfirmPin(e.target.value.replace(/\D/g, ''))}
-                  placeholder="Repita o novo PIN"
-                  className="w-full pl-3.5 pr-10 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-sm text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors font-mono tracking-widest"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPin(!showPin)}
-                  className="p-1.5 text-zinc-500 hover:text-zinc-300 absolute right-2.5 top-2 transition-colors"
-                  title={showPin ? 'Ocultar PIN' : 'Mostrar PIN'}
-                >
-                  {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Validation Checklist */}
-          {newPin.length > 0 && (
-            <div className="p-3 rounded-xl bg-[#0B0E12] border border-[#22282F] text-xs space-y-1.5">
-              <div className={`flex items-center gap-1.5 ${isLengthValid ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Pelo menos 6 dígitos numéricos</span>
-              </div>
-              <div className={`flex items-center gap-1.5 ${isMatchValid ? 'text-emerald-400' : 'text-zinc-500'}`}>
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>Confirmação idêntica ao novo PIN</span>
-              </div>
-              <div className={`flex items-center gap-1.5 ${!isWeak ? 'text-emerald-400' : 'text-rose-400'}`}>
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>PIN seguro (sem sequências óbvias ou dígitos repetidos)</span>
-              </div>
-            </div>
-          )}
-
-          <div className="flex items-center justify-between pt-2">
-            <p className="text-[11px] text-zinc-500">
-              Ao alterar o PIN, todas as sessões ativas anteriores serão imediatamente invalidadas.
-            </p>
-            <Button
-              type="submit"
-              variant="primary"
-              size="sm"
-              disabled={!canSubmit}
-            >
-              Alterar PIN
-            </Button>
-          </div>
-        </form>
       </div>
 
-      {/* Confirmation Modal */}
+      <form onSubmit={handleOpenConfirm} className="space-y-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {/* Novo PIN */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-slate-300">Novo PIN (Mínimo 6 dígitos)</label>
+            <div className="relative">
+              <input
+                type={showPin ? 'text' : 'password'}
+                value={newPin}
+                onChange={(e) => setNewPin(e.target.value)}
+                maxLength={8}
+                placeholder="••••••"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-sm text-white placeholder-slate-500 tracking-widest font-mono focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPin(!showPin)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-white"
+              >
+                {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+          </div>
+
+          {/* Confirmar Novo PIN */}
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-slate-300">Confirmar Novo PIN</label>
+            <input
+              type={showPin ? 'text' : 'password'}
+              value={confirmPin}
+              onChange={(e) => setConfirmPin(e.target.value)}
+              maxLength={8}
+              placeholder="••••••"
+              className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-sm text-white placeholder-slate-500 tracking-widest font-mono focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
+            />
+          </div>
+        </div>
+
+        {/* Validação de Segurança Dinâmica */}
+        <div className="p-3.5 rounded-xl bg-[#081021] border border-[#162a4d] flex flex-wrap items-center gap-4 text-xs font-mono">
+          <div className={`flex items-center gap-1.5 ${isLengthValid ? 'text-sky-400' : 'text-slate-500'}`}>
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>Pelo menos 6 dígitos</span>
+          </div>
+          <div className={`flex items-center gap-1.5 ${isMatchValid ? 'text-sky-400' : 'text-slate-500'}`}>
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>PINs coincidem</span>
+          </div>
+          {isWeak && (
+            <div className="flex items-center gap-1.5 text-rose-400">
+              <AlertTriangle className="w-3.5 h-3.5" />
+              <span>PIN comum ou fraco</span>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end">
+          <Button
+            type="submit"
+            variant="primary"
+            size="sm"
+            disabled={!canSubmit}
+            loading={saving}
+            icon={<Lock className="w-3.5 h-3.5" />}
+          >
+            Atualizar PIN de Acesso
+          </Button>
+        </div>
+      </form>
+
+      {/* Modal de Confirmação Crítica */}
       <ConfirmDialog
         isOpen={isConfirmOpen}
-        onClose={() => setIsConfirmOpen(false)}
-        onConfirm={executeChangePin}
         title="Confirmar Alteração do PIN"
-        description="Tem a certeza de que deseja atualizar o seu PIN de acesso? Suas credenciais anteriores serão invalidadas e um novo token criptográfico será emitido."
-        confirmText="Sim, Alterar PIN"
+        message="Atenção: Ao alterar o PIN, todas as sessões ativas deste bot serão invalidadas e desconectadas. Você precisará do novo PIN para entrar novamente."
+        confirmText="Confirmar e Alterar"
         cancelText="Voltar"
-        variant="warning"
+        variant="danger"
+        onConfirm={executeChangePin}
+        onCancel={() => setIsConfirmOpen(false)}
         loading={saving}
       />
-    </>
+    </div>
   );
 };

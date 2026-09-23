@@ -16,13 +16,16 @@ export const Toggle: React.FC<ToggleProps> = ({
   disabled = false
 }) => {
   return (
-    <div className="flex items-start justify-between gap-4 p-4 rounded-xl bg-[#101418] border border-[#22282F] hover:border-[#2E3742] transition-colors">
+    <div className="flex items-start justify-between gap-4 p-4 rounded-xl bg-[#0b1426]/90 border border-[#162a4d] hover:border-sky-500/30 transition-all">
       <div className="space-y-0.5">
-        <label className="text-sm font-medium text-zinc-200 cursor-pointer select-none">
+        <label 
+          onClick={() => !disabled && onChange(!checked)}
+          className="text-xs sm:text-sm font-medium text-slate-200 cursor-pointer select-none hover:text-white transition-colors"
+        >
           {label}
         </label>
         {description && (
-          <p className="text-xs text-zinc-400 leading-relaxed max-w-md">
+          <p className="text-[11px] sm:text-xs text-slate-400 leading-relaxed max-w-md">
             {description}
           </p>
         )}
@@ -33,12 +36,14 @@ export const Toggle: React.FC<ToggleProps> = ({
         aria-checked={checked}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed ${
-          checked ? 'bg-emerald-600' : 'bg-[#22282F]'
+        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border transition-all duration-200 ease-in-out focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed ${
+          checked 
+            ? 'bg-gradient-to-r from-sky-500 to-blue-600 border-sky-400/50 shadow-[0_0_12px_rgba(14,165,233,0.5)]' 
+            : 'bg-[#081021] border-[#1b3259]'
         }`}
       >
         <span
-          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition duration-200 ease-in-out ${
+          className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-md ring-0 transition duration-200 ease-in-out mt-[1px] ml-[1px] ${
             checked ? 'translate-x-5' : 'translate-x-0'
           }`}
         />

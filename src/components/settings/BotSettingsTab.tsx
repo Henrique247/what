@@ -108,10 +108,10 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
   };
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-200">
+    <div className="space-y-6">
       {/* Quick Section Anchor Navigation Bar */}
-      <div className="flex items-center gap-1.5 p-2 rounded-xl bg-[#0B0E12] border border-[#22282F] overflow-x-auto scrollbar-none sticky top-16 z-20 backdrop-blur-md bg-opacity-90">
-        <span className="text-[10px] text-zinc-500 font-semibold uppercase px-2 whitespace-nowrap">
+      <div className="flex items-center gap-1.5 p-2 rounded-2xl bg-[#0b1426]/90 border border-[#162a4d] overflow-x-auto scrollbar-none sticky top-16 z-20 backdrop-blur-md shadow-lg">
+        <span className="text-[10px] text-slate-400 font-semibold uppercase px-2 whitespace-nowrap">
           Navegação:
         </span>
         {SECTION_LINKS.map((sec) => (
@@ -119,7 +119,7 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
             key={sec.id}
             type="button"
             onClick={() => scrollToSection(sec.id)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-white hover:bg-[#151A1F] transition-colors whitespace-nowrap"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-white hover:bg-[#0f1d38] transition-colors whitespace-nowrap"
           >
             {sec.icon}
             <span>{sec.label}</span>
@@ -141,7 +141,7 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
 
       {/* Change Banner Alert */}
       {hasChanges && (
-        <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs text-amber-300 animate-in fade-in">
+        <div className="p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-between gap-3 text-xs text-amber-300">
           <div className="flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-amber-400 shrink-0" />
             <span>Existem alterações pendentes. Lembre-se de clicar em <strong>Guardar Alterações</strong>.</span>
@@ -179,12 +179,9 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
           bot={bot}
           clientToken={clientToken}
           isAdminMode={isAdminMode}
-          onTokenUpdated={(newToken) => {
-            // Updated token handled
-          }}
         />
 
-        {/* 4. Inteligência Artificial (IA) */}
+        {/* 4. Inteligência Artificial (Gemini) */}
         <AISettingsCard
           formData={formData}
           onChange={handleChange}
@@ -193,26 +190,25 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
           isAdminMode={isAdminMode}
         />
 
-        {/* 5. Conversas Privadas (1:1) */}
+        {/* 5. Conversas Privadas */}
         <PrivateSettingsCard
           formData={formData}
           onChange={handleChange}
         />
 
-        {/* 6. Comportamento em Grupos */}
+        {/* 6. Regras de Grupos */}
         <GroupSettingsCard
           formData={formData}
           onChange={handleChange}
-          onNavigateToTab={onNavigateToTab}
         />
 
-        {/* 7. Moderação */}
+        {/* 7. Moderação e Segurança de Conteúdo */}
         <ModerationSettingsCard
           formData={formData}
           onChange={handleChange}
         />
 
-        {/* 8. Motivação e Mensagens Automáticas */}
+        {/* 8. Motivação e Rotinas Diárias */}
         <MotivationSettingsCard
           formData={formData}
           onChange={handleChange}
@@ -224,9 +220,6 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
         {/* 9. Conexão WhatsApp */}
         <WhatsAppSettingsCard
           bot={bot}
-          clientToken={clientToken}
-          isAdminMode={isAdminMode}
-          onUpdateBot={onUpdateBot}
           onNavigateToTab={onNavigateToTab}
         />
 
@@ -234,37 +227,16 @@ export const BotSettingsTab: React.FC<BotSettingsTabProps> = ({
         <TechnicalInfoCard
           bot={bot}
           stats={stats}
-          isAdminMode={isAdminMode}
         />
 
-        {/* 11. Danger Zone */}
+        {/* 11. Zona de Perigo */}
         <DangerZoneCard
-          bot={bot}
+          botId={bot.id}
+          botName={bot.name}
           clientToken={clientToken}
           isAdminMode={isAdminMode}
-          onUpdateBot={onUpdateBot}
           onBotDeleted={onBotDeleted}
         />
-      </div>
-
-      {/* Bottom Sticky Action Bar if changes pending */}
-      <div className="p-4 rounded-2xl bg-[#0B0E12] border border-[#22282F] flex items-center justify-between gap-4 shadow-xl">
-        <div className="flex items-center gap-2 text-xs text-zinc-400">
-          <span className={`w-2 h-2 rounded-full ${hasChanges ? 'bg-amber-400 animate-pulse' : 'bg-emerald-400'}`} />
-          <span>{hasChanges ? 'Modificações não salvas no banco de dados' : 'Todas as configurações estão sincronizadas'}</span>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <Button
-            variant="primary"
-            size="md"
-            icon={<Save className="w-4 h-4" />}
-            loading={saving}
-            onClick={handleSave}
-          >
-            Guardar Configurações
-          </Button>
-        </div>
       </div>
     </div>
   );

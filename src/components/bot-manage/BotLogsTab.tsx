@@ -7,7 +7,11 @@ import {
   Play, 
   Search, 
   Download, 
-  Filter
+  Filter,
+  CheckCircle2,
+  AlertTriangle,
+  XCircle,
+  Info
 } from 'lucide-react';
 
 export interface LogEntry {
@@ -25,50 +29,12 @@ interface BotLogsTabProps {
   onClearLogs?: () => void;
 }
 
-const MOCK_INITIAL_LOGS: LogEntry[] = [
-  {
-    id: 'log-1',
-    timestamp: new Date(Date.now() - 10000).toISOString(),
-    level: 'INFO',
-    source: 'SYSTEM',
-    message: 'Instância inicializada com sucesso. Aguardando eventos de socket.'
-  },
-  {
-    id: 'log-2',
-    timestamp: new Date(Date.now() - 8000).toISOString(),
-    level: 'INFO',
-    source: 'BAILEYS',
-    message: 'Sessão re-autenticada via credenciais salvas no armazenamento seguro.'
-  },
-  {
-    id: 'log-3',
-    timestamp: new Date(Date.now() - 5000).toISOString(),
-    level: 'DEBUG',
-    source: 'BAILEYS',
-    message: 'Inbound message: [JID: 244923000000@s.whatsapp.net] - Content: "Olá, quais são os serviços disponíveis?"'
-  },
-  {
-    id: 'log-4',
-    timestamp: new Date(Date.now() - 3000).toISOString(),
-    level: 'INFO',
-    source: 'GEMINI',
-    message: 'Prompt contextual processado por gemini-1.5-flash. Tokens: 420 (input), 85 (output).'
-  },
-  {
-    id: 'log-5',
-    timestamp: new Date(Date.now() - 1000).toISOString(),
-    level: 'INFO',
-    source: 'BAILEYS',
-    message: 'Outbound message transmitida com sucesso para o destinatário.'
-  }
-];
-
 export const BotLogsTab: React.FC<BotLogsTabProps> = ({
   botId,
-  logs = MOCK_INITIAL_LOGS,
+  logs = [],
   onClearLogs
 }) => {
-  const [logList, setLogList] = useState<LogEntry[]>(logs.length > 0 ? logs : MOCK_INITIAL_LOGS);
+  const [logList, setLogList] = useState<LogEntry[]>(logs);
   const [filterLevel, setFilterLevel] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
@@ -76,9 +42,7 @@ export const BotLogsTab: React.FC<BotLogsTabProps> = ({
 
   // Sync logs when prop updates
   useEffect(() => {
-    if (logs && logs.length > 0) {
-      setLogList(logs);
-    }
+    setLogList(logs || []);
   }, [logs]);
 
   // Auto-scroll when new logs arrive
@@ -99,149 +63,142 @@ export const BotLogsTab: React.FC<BotLogsTabProps> = ({
       .join('\n');
     const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `bot-${botId}-logs-${Date.now()}.log`;
-    link.click();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `bot_${botId}_logs_${Date.now()}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const filteredLogs = logList.filter(log => {
-    const matchesLevel = filterLevel === 'ALL' || log.level === filterLevel;
-    const matchesSearch = searchQuery === '' || 
-      log.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      log.source.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (log.details && log.details.toLowerCase().includes(searchQuery.toLowerCase()));
-    return matchesLevel && matchesSearch;
+  const filteredLogs = logList.filter(l => {
+    if (filterLevel !== 'ALL' && l.level !== filterLevel) return false;
+    if (searchQuery.trim() !== '') {
+      const q = searchQuery.toLowerCase();
+      return (
+        l.message.toLowerCase().includes(q) ||
+        l.source.toLowerCase().includes(q) ||
+        (l.details && l.details.toLowerCase().includes(q))
+      );
+    }
+    return true;
   });
 
-  const getLevelBadgeClass = (level: LogEntry['level']) => {
-    switch (level) {
-      case 'INFO':
-        return 'text-[#34D399] bg-[#10B981]/10 border-[#10B981]/20';
-      case 'WARN':
-        return 'text-[#F59E0B] bg-[#F59E0B]/10 border-[#F59E0B]/20';
-      case 'ERROR':
-        return 'text-[#EF4444] bg-[#EF4444]/10 border-[#EF4444]/20';
-      case 'DEBUG':
-        return 'text-[#9DA4B0] bg-[#626B79]/10 border-[#626B79]/20';
-    }
-  };
-
   return (
-    <div className="space-y-4 max-w-5xl select-none">
+    <div className="space-y-4 select-none">
       {/* Barra de Ferramentas da Consola */}
-      <div className="panel p-3 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2 flex-1 min-w-[240px]">
-          <div className="relative w-full max-w-xs">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-[#626B79]" />
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0b1426]/90 border border-[#162a4d] shadow-lg">
+        {/* Filtros de Severidade */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0">
+          {(['ALL', 'INFO', 'WARN', 'ERROR', 'DEBUG'] as const).map((lvl) => (
+            <button
+              key={lvl}
+              onClick={() => setFilterLevel(lvl)}
+              className={`px-3 py-1 rounded-xl text-xs font-mono font-medium transition-all ${
+                filterLevel === lvl
+                  ? 'bg-sky-500 text-white font-bold shadow-[0_0_10px_rgba(14,165,233,0.35)]'
+                  : 'text-slate-400 hover:text-white hover:bg-[#0c1833]'
+              }`}
+            >
+              {lvl}
+            </button>
+          ))}
+        </div>
+
+        {/* Busca e Ações */}
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-sky-400/60" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Filtrar mensagem ou origem..."
-              className="w-full h-8 bg-[#090A0C] border border-[#2A2F37] rounded-[4px] pl-8 pr-3 text-xs font-mono text-[#ECEED0] placeholder-[#626B79] focus:outline-none focus:border-[#3A414D]"
+              placeholder="Buscar nos eventos..."
+              className="bg-[#081021] border border-[#1b3259] rounded-xl pl-8 pr-3 py-1.5 text-xs font-mono text-slate-200 placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] w-48 sm:w-60 transition-all"
             />
           </div>
 
-          <div className="flex items-center gap-1.5 bg-[#090A0C] border border-[#2A2F37] rounded-[4px] px-2 h-8">
-            <Filter className="w-3.5 h-3.5 text-[#626B79]" />
-            <select
-              value={filterLevel}
-              onChange={(e) => setFilterLevel(e.target.value)}
-              className="bg-transparent text-xs font-mono text-[#ECEED0] focus:outline-none cursor-pointer"
-            >
-              <option value="ALL" className="bg-[#101216]">TODOS</option>
-              <option value="INFO" className="bg-[#101216]">INFO</option>
-              <option value="WARN" className="bg-[#101216]">WARN</option>
-              <option value="ERROR" className="bg-[#101216]">ERROR</option>
-              <option value="DEBUG" className="bg-[#101216]">DEBUG</option>
-            </select>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            variant={autoScroll ? 'secondary' : 'ghost'}
-            icon={autoScroll ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          <button
             onClick={() => setAutoScroll(!autoScroll)}
+            className={`p-2 rounded-xl border transition-all ${
+              autoScroll
+                ? 'bg-sky-500/15 border-sky-400/30 text-sky-300'
+                : 'bg-[#081021] border-[#1b3259] text-slate-500 hover:text-white'
+            }`}
+            title={autoScroll ? 'Pausar auto-scroll' : 'Ativar auto-scroll'}
           >
-            {autoScroll ? 'Pausar Scroll' : 'Auto Scroll'}
-          </Button>
+            {autoScroll ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+          </button>
 
           <Button
             size="sm"
             variant="secondary"
             icon={<Download className="w-3.5 h-3.5" />}
             onClick={handleExportLogs}
+            title="Exportar logs"
           >
             Exportar
           </Button>
 
           <Button
             size="sm"
-            variant="danger"
+            variant="ghost"
             icon={<Trash2 className="w-3.5 h-3.5" />}
             onClick={handleClear}
+            title="Limpar consola"
           >
             Limpar
           </Button>
         </div>
       </div>
 
-      {/* Janela do Terminal */}
-      <div className="panel overflow-hidden border-[#1E2228]">
-        <div className="bg-[#101216] px-4 py-2 border-b border-[#1E2228] flex items-center justify-between text-[11px] font-mono text-[#626B79]">
-          <div className="flex items-center gap-2">
-            <Terminal className="w-3.5 h-3.5 text-[#059669]" />
-            <span>STDERR/STDOUT — INSTÂNCIA [{botId}]</span>
+      {/* Janela de Terminal Cyber */}
+      <div 
+        ref={logContainerRef}
+        className="h-[460px] bg-[#050913] border border-[#162a4d] rounded-2xl p-4 font-mono text-xs overflow-y-auto space-y-2 shadow-inner"
+      >
+        {filteredLogs.length === 0 ? (
+          <div className="h-full flex flex-col items-center justify-center text-slate-500 space-y-2">
+            <Terminal className="w-8 h-8 text-sky-400/30" />
+            <p className="text-xs">Nenhum evento registrado com os filtros atuais.</p>
           </div>
-          <span>{filteredLogs.length} EVENTOS</span>
-        </div>
+        ) : (
+          filteredLogs.map((log) => {
+            const levelStyles = {
+              INFO: 'text-sky-300 border-sky-400/20 bg-sky-500/10',
+              WARN: 'text-amber-300 border-amber-500/20 bg-amber-500/10',
+              ERROR: 'text-rose-400 border-rose-500/20 bg-rose-500/10',
+              DEBUG: 'text-slate-400 border-slate-700 bg-slate-800/30',
+            }[log.level];
 
-        <div
-          ref={logContainerRef}
-          className="bg-[#090A0C] p-4 h-[420px] overflow-y-auto font-mono text-[11px] leading-relaxed divide-y divide-[#16191E]"
-        >
-          {filteredLogs.length === 0 ? (
-            <div className="h-full flex items-center justify-center text-[#626B79]">
-              Nenhum registo de evento encontrado para os filtros selecionados.
-            </div>
-          ) : (
-            filteredLogs.map((log) => (
-              <div key={log.id} className="py-2 flex items-start gap-3 hover:bg-[#101216]/50 transition-colors">
-                <span className="text-[#626B79] shrink-0 select-none text-[10px]">
+            return (
+              <div 
+                key={log.id} 
+                className="p-2.5 rounded-xl bg-[#081021]/80 border border-[#142340] hover:border-sky-500/30 transition-colors flex items-start gap-3"
+              >
+                <span className="text-[10px] text-slate-500 shrink-0 mt-0.5">
                   {new Date(log.timestamp).toLocaleTimeString()}
                 </span>
-
-                <span className={`px-1.5 py-0.5 rounded-[2px] text-[9px] border font-bold shrink-0 ${getLevelBadgeClass(log.level)}`}>
+                
+                <span className={`text-[10px] px-2 py-0.5 rounded-full border shrink-0 font-bold ${levelStyles}`}>
                   {log.level}
                 </span>
 
-                <span className="text-[#9DA4B0] bg-[#16191E] px-1.5 py-0.5 rounded-[2px] border border-[#2A2F37] text-[10px] shrink-0 select-none">
+                <span className="text-[10px] text-sky-400/80 bg-sky-500/5 px-2 py-0.5 rounded border border-sky-900/30 shrink-0">
                   {log.source}
                 </span>
 
-                <div className="text-[#ECEED0] break-all flex-1">
-                  {log.message}
+                <div className="flex-1 min-w-0">
+                  <div className="text-slate-200 break-all leading-relaxed">{log.message}</div>
                   {log.details && (
-                    <pre className="mt-1 p-2 bg-[#101216] border border-[#1E2228] rounded-[2px] text-[10px] text-[#9DA4B0] overflow-x-auto">
+                    <div className="text-[11px] text-slate-400 mt-1 pl-2 border-l border-[#1b3259]">
                       {log.details}
-                    </pre>
+                    </div>
                   )}
                 </div>
               </div>
-            ))
-          )}
-        </div>
-
-        <div className="bg-[#101216] px-4 py-1.5 border-t border-[#1E2228] flex items-center justify-between text-[10px] font-mono text-[#626B79]">
-          <span className="flex items-center gap-1.5">
-            <span className={`w-1.5 h-1.5 rounded-full ${autoScroll ? 'bg-[#10B981] animate-pulse' : 'bg-[#6B7280]'}`} />
-            {autoScroll ? 'STREAM EM TEMPO REAL ATIVO' : 'STREAM EM PAUSA'}
-          </span>
-          <span>BAILEYS SOCKET PIPE</span>
-        </div>
+            );
+          })
+        )}
       </div>
     </div>
   );

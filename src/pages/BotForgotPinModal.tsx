@@ -60,11 +60,11 @@ export const BotForgotPinModal: React.FC<BotForgotPinModalProps> = ({ isOpen, on
     >
       {submitted ? (
         <div className="py-6 text-center space-y-4">
-          <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
-            <ShieldCheck className="w-6 h-6" />
+          <div className="w-14 h-14 rounded-2xl bg-sky-500/15 border border-sky-400/40 text-sky-400 flex items-center justify-center mx-auto shadow-[0_0_20px_rgba(14,165,233,0.3)]">
+            <ShieldCheck className="w-7 h-7" />
           </div>
           <h3 className="text-base font-semibold text-white">Solicitação Recebida</h3>
-          <p className="text-xs text-zinc-400 max-w-sm mx-auto leading-relaxed">
+          <p className="text-xs text-slate-400 max-w-sm mx-auto leading-relaxed">
             Se os dados corresponderem a um proprietário cadastrado, o pedido será processado e o administrador fará a redefinição do seu PIN.
           </p>
           <Button
@@ -81,64 +81,67 @@ export const BotForgotPinModal: React.FC<BotForgotPinModalProps> = ({ isOpen, on
       ) : (
         <form onSubmit={handleSubmit} className="space-y-4">
           <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1 flex items-center gap-1.5">
-              <User className="w-3.5 h-3.5 text-emerald-400" />
-              Nome Completo <span className="text-emerald-400">*</span>
+            <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center gap-1.5">
+              <User className="w-3.5 h-3.5 text-sky-400" />
+              Nome Completo <span className="text-sky-400">*</span>
             </label>
             <input
               type="text"
               value={fullName}
               onChange={(e) => setFullName(e.target.value)}
               placeholder="Ex: Henrique Mendes"
-              className="w-full bg-[#151A1F] border border-[#22282F] rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50"
+              className="w-full bg-[#081021] border border-[#1b3259] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
               required
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1 flex items-center gap-1.5">
-              <Phone className="w-3.5 h-3.5 text-emerald-400" />
-              Número de WhatsApp <span className="text-emerald-400">*</span>
+            <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center gap-1.5">
+              <Phone className="w-3.5 h-3.5 text-sky-400" />
+              Número de WhatsApp do Dono <span className="text-sky-400">*</span>
             </label>
             <input
               type="text"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
-              placeholder="Ex: +244 923 000 000"
-              className="w-full bg-[#151A1F] border border-[#22282F] rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50"
+              placeholder="Ex: 5511999998888 ou 244923000000"
+              className="w-full bg-[#081021] border border-[#1b3259] rounded-xl px-3.5 py-2.5 text-xs font-mono text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
               required
             />
           </div>
 
           <div>
-            <label className="block text-xs font-medium text-zinc-300 mb-1 flex items-center gap-1.5">
-              <Mail className="w-3.5 h-3.5 text-emerald-400" />
-              Email (Opcional)
+            <label className="block text-xs font-medium text-slate-300 mb-1 flex items-center gap-1.5">
+              <Mail className="w-3.5 h-3.5 text-sky-400" />
+              Email para Contato (Opcional)
             </label>
             <input
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="Ex: seuemail@exemplo.com"
-              className="w-full bg-[#151A1F] border border-[#22282F] rounded-xl px-3.5 py-2.5 text-xs text-zinc-100 placeholder-zinc-600 focus:outline-none focus:border-emerald-500/50"
+              placeholder="Ex: henrique@empresa.com"
+              className="w-full bg-[#081021] border border-[#1b3259] rounded-xl px-3.5 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
             />
           </div>
 
-          <div className="pt-2 flex justify-end gap-3">
+          <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#142340]">
             <Button
               type="button"
               variant="ghost"
+              size="sm"
               onClick={onClose}
+              disabled={loading}
             >
               Cancelar
             </Button>
             <Button
               type="submit"
               variant="primary"
-              disabled={loading}
-              icon={<ArrowRight className="w-4 h-4" />}
+              size="sm"
+              loading={loading}
+              icon={<ArrowRight className="w-3.5 h-3.5" />}
             >
-              {loading ? 'Enviando...' : 'Solicitar Recuperação'}
+              Enviar Solicitação
             </Button>
           </div>
         </form>

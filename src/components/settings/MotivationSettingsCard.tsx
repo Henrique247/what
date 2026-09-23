@@ -63,17 +63,17 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
   };
 
   return (
-    <div id="settings-motivation" className="techstar-card p-5 sm:p-6 space-y-5">
-      <div className="flex items-center justify-between pb-3 border-b border-[#22282F]">
+    <div id="settings-motivation" className="bg-[#0b1426]/90 backdrop-blur-md rounded-2xl border border-[#162a4d] p-5 sm:p-6 space-y-5 shadow-lg">
+      <div className="flex items-center justify-between pb-3 border-b border-[#142340]">
         <div className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+          <div className="w-8 h-8 rounded-xl bg-sky-500/10 border border-sky-400/20 flex items-center justify-center text-sky-400 shadow-[0_0_10px_rgba(14,165,233,0.2)]">
             <SunMedium className="w-4 h-4" />
           </div>
           <div>
-            <h2 className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">
+            <h2 className="text-sm font-semibold text-white uppercase tracking-wider">
               Motivação & Mensagens Automáticas
             </h2>
-            <p className="text-xs text-zinc-400">Agendamento de mensagens diárias para grupos ou privado</p>
+            <p className="text-xs text-slate-400">Agendamento de mensagens diárias para grupos ou privado</p>
           </div>
         </div>
 
@@ -98,10 +98,10 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
         />
 
         {formData.dailyMotivationEnabled && (
-          <div className="space-y-4 pt-2 border-t border-[#22282F]">
+          <div className="space-y-4 pt-2 border-t border-[#142340]">
             {/* Título da Mensagem Personalizável */}
             <div className="space-y-1.5">
-              <label className="text-xs font-medium text-zinc-300">
+              <label className="text-xs font-medium text-slate-300">
                 Título do Cabeçalho da Mensagem
               </label>
               <input
@@ -109,7 +109,7 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
                 value={formData.dailyMotivationTitle || ''}
                 onChange={(e) => onChange('dailyMotivationTitle', e.target.value)}
                 placeholder="Ex: Mensagem do Dia, Reflexão Matinal..."
-                className="w-full px-3.5 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-xs text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors"
+                className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
               />
             </div>
 
@@ -122,8 +122,8 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
             />
 
             {/* Modo de Geração */}
-            <div className="p-4 rounded-xl bg-[#101418] border border-[#22282F] space-y-2">
-              <label className="text-xs font-semibold text-zinc-200">
+            <div className="p-4 rounded-xl bg-[#081021] border border-[#162a4d] space-y-2">
+              <label className="text-xs font-semibold text-white">
                 Modo de Conteúdo
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
@@ -138,14 +138,14 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
                       key={mode.id}
                       type="button"
                       onClick={() => onChange('dailyMotivationMode', mode.id)}
-                      className={`p-3 rounded-xl border text-left transition-all ${
+                      className={`p-3.5 rounded-xl border text-left transition-all ${
                         selected
-                          ? 'bg-emerald-500/10 border-emerald-500/30 text-white'
-                          : 'bg-[#0B0E12] border-[#22282F] text-zinc-400 hover:text-zinc-200'
+                          ? 'bg-sky-500/15 border-sky-400/50 text-white shadow-[0_0_15px_rgba(14,165,233,0.15)]'
+                          : 'bg-[#091326] border-[#162a4d] text-slate-400 hover:text-white'
                       }`}
                     >
-                      <p className="text-xs font-semibold text-zinc-200">{mode.label}</p>
-                      <p className="text-[11px] text-zinc-500 mt-1">{mode.desc}</p>
+                      <p className="text-xs font-semibold text-white">{mode.label}</p>
+                      <p className="text-[11px] text-slate-400 mt-1">{mode.desc}</p>
                     </button>
                   );
                 })}
@@ -155,7 +155,7 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
             {/* Mensagem Fixa ou Tópico de IA */}
             {formData.dailyMotivationMode === 'fixed' ? (
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300">
+                <label className="text-xs font-medium text-slate-300">
                   Texto Fixo da Mensagem Diária
                 </label>
                 <textarea
@@ -163,12 +163,12 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
                   value={formData.dailyMotivationFixedText || ''}
                   onChange={(e) => onChange('dailyMotivationFixedText', e.target.value)}
                   placeholder="Escreva a mensagem diária que será enviada aos seus contatos e grupos..."
-                  className="w-full px-3.5 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-xs text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors resize-none leading-relaxed"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all resize-none leading-relaxed font-mono"
                 />
               </div>
             ) : (
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300">
+                <label className="text-xs font-medium text-slate-300">
                   Tema ou Foco da Mensagem (Opcional para a IA)
                 </label>
                 <input
@@ -176,63 +176,49 @@ export const MotivationSettingsCard: React.FC<MotivationSettingsCardProps> = ({
                   value={formData.dailyMotivationTopic || ''}
                   onChange={(e) => onChange('dailyMotivationTopic', e.target.value)}
                   placeholder="Ex: Empreendedorismo, superação, gratidão, liderança..."
-                  className="w-full px-3.5 py-2 rounded-xl bg-[#101418] border border-[#22282F] text-xs text-zinc-100 focus:outline-none focus:border-emerald-500 transition-colors"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all font-mono"
                 />
               </div>
             )}
 
-            {/* Horário e Fuso Horário */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-4 rounded-xl bg-[#101418] border border-[#22282F]">
+            {/* Configuração de Horário & Dias da Semana */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
-                  <Clock className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Horário de Envio</span>
+                <label className="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-sky-400" />
+                  <span>Horário do Disparo Diário</span>
                 </label>
                 <input
                   type="time"
                   value={formData.dailyMotivationTime || '08:00'}
                   onChange={(e) => onChange('dailyMotivationTime', e.target.value)}
-                  className="w-full px-3.5 py-2 rounded-xl bg-[#0B0E12] border border-[#22282F] text-sm text-zinc-100 font-mono focus:outline-none focus:border-emerald-500 transition-colors"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-[#081021] border border-[#1b3259] text-xs font-mono text-white focus:outline-none focus:border-sky-400 focus:shadow-[0_0_10px_rgba(14,165,233,0.25)] transition-all"
                 />
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300 flex items-center gap-1.5">
-                  <Globe className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Fuso Horário Oficial</span>
+                <label className="text-xs font-medium text-slate-300">
+                  Dias da Semana com Envio
                 </label>
-                <input
-                  type="text"
-                  readOnly
-                  value="Africa/Luanda (UTC+1)"
-                  className="w-full px-3.5 py-2 rounded-xl bg-[#0B0E12] border border-[#22282F] text-xs text-zinc-400 font-mono cursor-default"
-                />
-              </div>
-            </div>
-
-            {/* Dias da Semana */}
-            <div className="space-y-2">
-              <label className="text-xs font-medium text-zinc-300">
-                Dias de Disparo Semanal
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {WEEK_DAYS.map((day) => {
-                  const isChecked = selectedDays.includes(day.id);
-                  return (
-                    <button
-                      key={day.id}
-                      type="button"
-                      onClick={() => toggleDay(day.id)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-                        isChecked
-                          ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300 shadow-xs'
-                          : 'bg-[#101418] border-[#22282F] text-zinc-500 hover:text-zinc-300'
-                      }`}
-                    >
-                      {day.label}
-                    </button>
-                  );
-                })}
+                <div className="flex items-center gap-1.5 pt-1">
+                  {WEEK_DAYS.map((day) => {
+                    const active = selectedDays.includes(day.id);
+                    return (
+                      <button
+                        key={day.id}
+                        type="button"
+                        onClick={() => toggleDay(day.id)}
+                        className={`flex-1 py-1.5 rounded-lg text-xs font-mono font-medium transition-all ${
+                          active
+                            ? 'bg-sky-500 text-white shadow-[0_0_8px_rgba(14,165,233,0.3)]'
+                            : 'bg-[#081021] border border-[#142340] text-slate-500 hover:text-white'
+                        }`}
+                      >
+                        {day.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
           </div>
